@@ -1,0 +1,25 @@
+# Home Assistant dev config (per-dev, contains secrets)
+/ha_config/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editor
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
+.idea/
+*.swp
+.DS_Store

@@ -3,11 +3,16 @@
     "step": {
       "user": {
         "title": "NOAA Tides Plus",
-        "description": "Enter the NOAA CO-OPS tide station ID (for example 8467150). Find station IDs at https://tidesandcurrents.noaa.gov/tide_predictions.html",
+        "description": "Enter the NOAA CO-OPS tide station ID (for example 8467150 for Bridgeport, CT). Find station IDs at https://tidesandcurrents.noaa.gov/tide_predictions.html",
         "data": {
           "station_id": "Station ID"
         }
       }
+    },
+    "error": {
+      "unknown_station": "That station ID was not found at NOAA.",
+      "not_tidal": "That station exists but does not publish tide predictions.",
+      "cannot_connect": "Failed to reach the NOAA API. Try again in a moment."
     },
     "abort": {
       "already_configured": "This station is already configured."

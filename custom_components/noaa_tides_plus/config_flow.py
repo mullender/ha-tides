@@ -11,7 +11,14 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ApiError, StationNotTidal, UnknownStation, get_station
-from .const import CONF_STATION_ID, DOMAIN
+from .const import (
+    CONF_STATION_ID,
+    CONF_STATION_LAT,
+    CONF_STATION_LNG,
+    CONF_STATION_NAME,
+    CONF_STATION_STATE,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,7 +54,13 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
                     title = f"{station.name}, {station.state} ({station.id})"
                 return self.async_create_entry(
                     title=title,
-                    data={CONF_STATION_ID: station.id},
+                    data={
+                        CONF_STATION_ID: station.id,
+                        CONF_STATION_NAME: station.name,
+                        CONF_STATION_STATE: station.state,
+                        CONF_STATION_LAT: station.lat,
+                        CONF_STATION_LNG: station.lng,
+                    },
                 )
 
         return self.async_show_form(

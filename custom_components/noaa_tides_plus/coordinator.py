@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 import logging
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -16,6 +17,9 @@ _LOGGER = logging.getLogger(__name__)
 
 REFRESH_INTERVAL = timedelta(hours=12)
 FETCH_HOURS = 7 * 24
+
+
+type NoaaTidesEntry = ConfigEntry[NoaaTidesCoordinator]
 
 
 class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):

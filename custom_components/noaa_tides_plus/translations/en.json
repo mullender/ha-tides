@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NOAA Tides Plus",
+        "description": "Enter the NOAA CO-OPS tide station ID (for example 8467150). Find station IDs at https://tidesandcurrents.noaa.gov/tide_predictions.html",
+        "data": {
+          "station_id": "Station ID"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This station is already configured."
+    }
+  }
+}

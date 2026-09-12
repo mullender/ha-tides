@@ -1,0 +1,11 @@
+{
+  "domain": "noaa_tides_plus",
+  "name": "NOAA Tides Plus",
+  "version": "0.1.0",
+  "codeowners": ["@mullender"],
+  "config_flow": true,
+  "documentation": "https://github.com/mullender/ha-tides",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/mullender/ha-tides/issues",
+  "requirements": []
+}

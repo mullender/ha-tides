@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to Home Assistant",
+      "type": "python",
+      "request": "attach",
+      "port": 5678,
+      "host": "localhost",
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}/custom_components",
+          "remoteRoot": "/config/custom_components"
+        }
+      ],
+      "justMyCode": false
+    }
+  ]
+}

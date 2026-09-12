@@ -73,7 +73,12 @@ async def get_station(session: ClientSession, station_id: str) -> Station:
         raise UnknownStation(station_id)
 
     s = stations[0]
-    if not s.get("tidal"):
+    # Reference stations expose ``tidal: true``; subordinates omit the field
+    # entirely and carry ``type: "S"`` with a ``reference_id`` back to the
+    # parent. Both kinds return tide predictions from the datagetter API.
+    is_reference_tide = bool(s.get("tidal"))
+    is_subordinate = s.get("type") == "S" and s.get("reference_id")
+    if not (is_reference_tide or is_subordinate):
         raise StationNotTidal(station_id)
 
     return Station(

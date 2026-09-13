@@ -1,6 +1,6 @@
 {
   "domain": "noaa_tides_plus",
-  "name": "NOAA Tides Plus",
+  "name": "Tides Plus (USA, NOAA)",
   "version": "0.1.0",
   "codeowners": ["@mullender"],
   "config_flow": true,

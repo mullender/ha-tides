@@ -23,14 +23,18 @@ type NoaaTidesEntry = ConfigEntry[NoaaTidesCoordinator]
 
 
 class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):
-    """Fetch and cache hi/lo tide predictions for one station."""
+    """Fetch and cache hi/lo tide predictions for one station.
+
+    Predictions are always requested from NOAA in metric units (metres);
+    display-unit conversion is delegated to Home Assistant via
+    ``SensorDeviceClass.DISTANCE`` on the exposed entities.
+    """
 
     def __init__(
         self,
         hass: HomeAssistant,
         *,
         station_id: str,
-        units: str,
         datum: str,
     ) -> None:
         super().__init__(
@@ -40,7 +44,6 @@ class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):
             update_interval=REFRESH_INTERVAL,
         )
         self.station_id = station_id
-        self.units = units
         self.datum = datum
 
     async def _async_update_data(self) -> list[TideExtremum]:
@@ -49,7 +52,7 @@ class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):
             data = await get_hilo_predictions(
                 session,
                 self.station_id,
-                units=self.units,  # type: ignore[arg-type]
+                units="metric",
                 datum=self.datum,
                 hours=FETCH_HOURS,
             )

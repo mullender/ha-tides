@@ -120,9 +120,14 @@ class NextTideTimeSensor(_NoaaTidesSensor):
 
 
 class NextTideHeightSensor(_NoaaTidesSensor):
-    """Predicted water height at the next high or low tide."""
+    """Predicted water height at the next high or low tide.
+
+    Stored in metres; HA converts to the user's preferred length unit at
+    display time via ``SensorDeviceClass.DISTANCE``.
+    """
 
     _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_native_unit_of_measurement = UnitOfLength.METERS
     _attr_suggested_display_precision = 2
 
     def __init__(
@@ -139,11 +144,6 @@ class NextTideHeightSensor(_NoaaTidesSensor):
             station_id,
             suffix="height",
             name=f"Next {kind} tide height",
-        )
-        self._attr_native_unit_of_measurement = (
-            UnitOfLength.METERS
-            if coordinator.units == "metric"
-            else UnitOfLength.FEET
         )
 
     @property

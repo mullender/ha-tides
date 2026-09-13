@@ -152,7 +152,7 @@ class TideHeightSensor(_NoaaTidesBase):
     _attr_native_unit_of_measurement = UnitOfLength.METERS
     _attr_suggested_display_precision = 2
     _attr_icon = "mdi:sine-wave"
-    _attr_name = "Tide height"
+    _attr_name = "Tide height (estimated)"
 
     def __init__(
         self,

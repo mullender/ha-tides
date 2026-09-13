@@ -22,6 +22,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import NoaaTidesCoordinator, NoaaTidesEntry
+from .helpers import format_device_name
 
 Kind = Literal["high", "low"]
 
@@ -34,12 +35,10 @@ async def async_setup_entry(
     """Set up sensors for a NOAA Tides Plus config entry."""
     coordinator = entry.runtime_data
     station_id: str = entry.data[CONF_STATION_ID]
-    station_name: str = entry.data.get(CONF_STATION_NAME) or station_id
+    station_name: str | None = entry.data.get(CONF_STATION_NAME)
     station_state: str | None = entry.data.get(CONF_STATION_STATE)
 
-    device_name = (
-        f"{station_name}, {station_state}" if station_state else station_name
-    )
+    device_name = format_device_name(station_id, station_name, station_state)
     device_info = DeviceInfo(
         identifiers={(DOMAIN, station_id)},
         name=device_name,

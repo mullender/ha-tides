@@ -70,6 +70,9 @@ def _next_extremum(
     return next((p for p in data if p.type == marker and p.time > now), None)
 
 
+_KIND_ICON = {"high": "mdi:wave-arrow-up", "low": "mdi:wave-arrow-down"}
+
+
 class _NoaaTidesSensor(CoordinatorEntity[NoaaTidesCoordinator], SensorEntity):
     """Common bits for NOAA Tides Plus sensors."""
 
@@ -90,6 +93,7 @@ class _NoaaTidesSensor(CoordinatorEntity[NoaaTidesCoordinator], SensorEntity):
         self._attr_device_info = device_info
         self._attr_unique_id = f"{station_id}_next_{kind}_{suffix}"
         self._attr_name = name
+        self._attr_icon = _KIND_ICON[kind]
 
 
 class NextTideTimeSensor(_NoaaTidesSensor):
@@ -112,9 +116,6 @@ class NextTideTimeSensor(_NoaaTidesSensor):
             suffix="tide",
             name=f"Next {kind} tide",
         )
-        self._attr_icon = (
-            "mdi:wave-arrow-up" if kind == "high" else "mdi:wave-arrow-down"
-        )
 
     @property
     def native_value(self) -> datetime | None:
@@ -132,7 +133,6 @@ class NextTideHeightSensor(_NoaaTidesSensor):
     _attr_device_class = SensorDeviceClass.DISTANCE
     _attr_native_unit_of_measurement = UnitOfLength.METERS
     _attr_suggested_display_precision = 2
-    _attr_icon = "mdi:waves"
 
     def __init__(
         self,

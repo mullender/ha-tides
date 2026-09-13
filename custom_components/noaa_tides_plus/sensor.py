@@ -112,7 +112,9 @@ class NextTideTimeSensor(_NoaaTidesSensor):
             suffix="tide",
             name=f"Next {kind} tide",
         )
-        self._attr_icon = "mdi:tide-high" if kind == "high" else "mdi:tide-low"
+        self._attr_icon = (
+            "mdi:wave-arrow-up" if kind == "high" else "mdi:wave-arrow-down"
+        )
 
     @property
     def native_value(self) -> datetime | None:

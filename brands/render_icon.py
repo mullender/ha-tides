@@ -1,11 +1,17 @@
 """Render the Tides Plus brand icon to PNGs at multiple sizes.
 
 Draws in PIL rather than via SVG because the ImageMagick SVG backend on
-this machine ignores stroked paths. Run inside the HA container:
+this machine ignores stroked paths. Writes the HA-facing brand images
+into ``custom_components/noaa_tides_plus/brand/`` (which HA 2026.3+
+serves through ``/api/brands/integration/<domain>/<image>``) and a
+standalone ``favicon.png`` back into this directory.
+
+Run inside the HA container so PIL is available:
 
     docker cp brands/render_icon.py ha_dev:/tmp/render_icon.py
-    docker exec ha_dev python3 /tmp/render_icon.py /tmp/
-    docker cp ha_dev:/tmp/icon_512.png brands/icon_512.png
+    docker exec ha_dev python3 /tmp/render_icon.py /tmp/icons
+    docker cp ha_dev:/tmp/icons/. custom_components/noaa_tides_plus/brand/
+    docker cp ha_dev:/tmp/icons/favicon.png brands/favicon.png
 """
 
 from __future__ import annotations

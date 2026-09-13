@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="brands/icon.png" alt="Tides Plus" width="128" height="128">
+  <img src="custom_components/noaa_tides_plus/brand/icon.png" alt="Tides Plus" width="128" height="128">
 </p>
 
 <h1 align="center">Tides Plus (USA, NOAA)</h1>

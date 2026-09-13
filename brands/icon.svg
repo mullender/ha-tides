@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Tides Plus">
+  <rect width="256" height="256" rx="56" fill="#0891b2"/>
+  <line x1="24" y1="128" x2="232" y2="128" stroke="#ffffff" stroke-width="2" stroke-dasharray="4 6" opacity="0.35"/>
+  <path d="M 16 128 Q 74 32 128 128 T 240 128"
+        stroke="#ffffff" stroke-width="14" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="74" cy="80" r="7" fill="#ffffff"/>
+  <circle cx="182" cy="176" r="7" fill="#ffffff"/>
+</svg>

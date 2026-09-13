@@ -1,4 +1,8 @@
-# ha-tides
+<p align="center">
+  <img src="brands/icon.png" alt="Tides Plus" width="128" height="128">
+</p>
+
+<h1 align="center">Tides Plus (USA, NOAA)</h1>
 
 Home Assistant custom integration for NOAA tide predictions.
 

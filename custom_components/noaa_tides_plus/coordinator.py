@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,7 +16,8 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 REFRESH_INTERVAL = timedelta(hours=12)
-FETCH_HOURS = 7 * 24
+LOOKBACK_HOURS = 12
+FETCH_HOURS = LOOKBACK_HOURS + 7 * 24
 
 
 type NoaaTidesEntry = ConfigEntry[NoaaTidesCoordinator]
@@ -48,6 +49,7 @@ class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):
 
     async def _async_update_data(self) -> list[TideExtremum]:
         session = async_get_clientsession(self.hass)
+        begin = datetime.now(UTC) - timedelta(hours=LOOKBACK_HOURS)
         try:
             data = await get_hilo_predictions(
                 session,
@@ -55,6 +57,7 @@ class NoaaTidesCoordinator(DataUpdateCoordinator[list[TideExtremum]]):
                 units="metric",
                 datum=self.datum,
                 hours=FETCH_HOURS,
+                begin=begin,
             )
         except ApiError as err:
             raise UpdateFailed(str(err)) from err

@@ -98,9 +98,15 @@ async def get_hilo_predictions(
     units: Literal["metric", "english"] = "metric",
     datum: str = "MLLW",
     hours: int = 168,
+    begin: datetime | None = None,
 ) -> list[TideExtremum]:
-    """Fetch high/low tide predictions covering ``hours`` from now, in UTC."""
-    begin = datetime.now(UTC)
+    """Fetch high/low tide predictions covering ``hours`` from ``begin``.
+
+    ``begin`` defaults to the current UTC time. Times in the returned
+    ``TideExtremum`` are UTC-aware.
+    """
+    if begin is None:
+        begin = datetime.now(UTC)
     params = {
         "product": "predictions",
         "application": APPLICATION,

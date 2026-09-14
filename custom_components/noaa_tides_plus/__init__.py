@@ -39,6 +39,7 @@ _FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """One-time domain setup: WebSocket commands and the Lovelace card asset."""
+    _LOGGER.info("noaa_tides_plus async_setup: registering WS + card asset")
     async_register_ws(hass)
 
     await hass.http.async_register_static_paths(
@@ -49,6 +50,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         ]
     )
     add_extra_js_url(hass, _FRONTEND_URL)
+    _LOGGER.info("noaa_tides_plus card served at %s", _FRONTEND_URL)
     return True
 
 

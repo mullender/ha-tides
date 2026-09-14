@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import UnitOfLength
@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import DistanceConverter
 
 from .api import TideExtremum
 from .const import (
@@ -182,7 +183,13 @@ class TideExtremumHeightSensor(_NoaaTidesBase):
 
 
 class TideHeightSensor(_NoaaTidesBase):
-    """PCHIP-interpolated current water height."""
+    """PCHIP-interpolated current water height.
+
+    Also carries an ``extrema`` attribute — the coordinator's full cached
+    hi/lo knot list (converted to the sensor's display unit) — so blueprints
+    and template automations can iterate every upcoming H/L, not just the
+    scalar "next" siblings.
+    """
 
     _attr_device_class = SensorDeviceClass.DISTANCE
     _attr_native_unit_of_measurement = UnitOfLength.METERS
@@ -203,6 +210,30 @@ class TideHeightSensor(_NoaaTidesBase):
     @property
     def native_value(self) -> float | None:
         return interpolate_height(self.coordinator.data or [], dt_util.utcnow())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if not self.coordinator.data:
+            return None
+        # Values match the sensor's displayed unit so blueprint thresholds
+        # can be entered in the same unit users see on the state chip.
+        display_unit = self.unit_of_measurement or UnitOfLength.METERS
+        return {
+            "unit": display_unit,
+            "extrema": [
+                {
+                    "time": k.time.isoformat(),
+                    "height": round(
+                        DistanceConverter.convert(
+                            k.height, UnitOfLength.METERS, display_unit
+                        ),
+                        3,
+                    ),
+                    "type": k.type,
+                }
+                for k in self.coordinator.data
+            ],
+        }
 
 
 class TideStateSensor(_NoaaTidesBase):

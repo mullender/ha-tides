@@ -1,13 +1,15 @@
 blueprint:
   name: Tide extreme alert (crosses threshold)
   description: |
-    Fires once a day at a chosen local time and notifies you when the next
-    high or low tide within a lookahead window crosses a threshold height.
+    Fires once a day at a chosen local time and notifies you when the
+    **first** upcoming high or low tide within a lookahead window that
+    matches your criteria (threshold, direction, optional daylight) is
+    coming up.
 
     Great for planning ahead — *"notify me at noon the day prior about
     tomorrow morning's ultra-low tide"* so you can pack for a tidepool
-    trip. Optional sun-aware daylight filter so overnight lows do not
-    ping you.
+    trip. Skips over non-matching tides — if today's low is above your
+    threshold but tomorrow's is below, the notification still fires.
   domain: automation
   source_url: https://raw.githubusercontent.com/mullender/ha-tides/main/blueprints/automation/ha_tides_plus/tide_extreme_alert.yaml
   input:
@@ -16,8 +18,9 @@ blueprint:
       description: |
         The Tides Plus station device.
 
-        The blueprint infers which sensor to watch from the **Direction**
-        choice below.
+        The blueprint reads the `Tide height (estimated)` sensor on this
+        device and iterates its `extrema` attribute to find the first
+        matching upcoming tide.
       selector:
         device:
           filter:
@@ -25,16 +28,16 @@ blueprint:
     threshold_direction:
       name: Direction
       description: |
-        - **Below** — watches the next *low* tide (typical tidepool case).
-        - **Above** — watches the next *high* tide (dock height, king-high warning, storm surge).
+        - **Below** — match a *low* tide at or below the threshold (typical tidepool case).
+        - **Above** — match a *high* tide at or above the threshold (dock height, king-high, storm surge).
       default: below
       selector:
         select:
           options:
             - value: below
-              label: Notify when the next LOW is at or below the threshold
+              label: Match a LOW tide at or below the threshold
             - value: above
-              label: Notify when the next HIGH is at or above the threshold
+              label: Match a HIGH tide at or above the threshold
     threshold:
       name: Height threshold
       description: |
@@ -52,8 +55,8 @@ blueprint:
     notify_at:
       name: Notify at (local time of day)
       description: |
-        The blueprint runs once each day at this time. Pick the lead time
-        that suits you — for example:
+        The blueprint runs once each day at this time. Pick the lead
+        time that suits you:
 
         - **12:00** — noon the day before
         - **20:00** — the evening before
@@ -67,21 +70,22 @@ blueprint:
         How far into the future to look for a matching tide when the
         blueprint runs.
 
-        - **24–30 h** — "some time before tomorrow noon" if firing at noon
-        - **48 h** — covers the next full high/low cycle
+        - **24–30 h** — some time before tomorrow noon (if firing at noon)
+        - **48 h** — the next full high/low cycle
+        - **168 h** — a whole week; catches the next matching tide even if today's cycle is quiet
       default: 30
       selector:
         number:
           min: 1
-          max: 96
+          max: 168
           step: 1
           mode: slider
           unit_of_measurement: hr
     require_daylight:
-      name: Only notify if the event happens in daylight
+      name: Only match tides that happen in daylight
       description: |
         Uses `sun.sun`'s `next_rising` / `next_setting`, projecting the
-        local time-of-day onto the event's date.
+        local time-of-day onto each candidate's date.
 
         Accurate to a few minutes at ±1 day — sunrise drifts ≈ 1 min/day.
       default: true
@@ -111,8 +115,9 @@ blueprint:
         Template-friendly. Available placeholders:
 
         - `{{ station_name }}` — e.g. *"9445882: Eagle Harbor, WA"*
-        - `{{ event_height }}` — the height, as a number-string
-        - `{{ event_unit }}` — `ft` or `m`, matching the sensor
+        - `{{ event_height }}` — the matched tide's height (rounded)
+        - `{{ event_unit }}` — `ft` or `m`
+        - `{{ event_type }}` — `H` or `L`
         - `{{ event_time_local }}` — a datetime (use `.strftime('%-I:%M %p')`)
         - `{{ when_day }}` — `today` / `tomorrow` / weekday name
       default: "Tide alert for {{ station_name }}"
@@ -161,29 +166,62 @@ variables:
   require_daylight: !input require_daylight
   sun_entity: !input sun_entity
   notification_data: !input notification_data
-  # Sensor inference — Tides Plus entity IDs end with these suffixes
-  # regardless of the device name.
-  time_entity: >-
-    {% set ents = device_entities(station_device) %}
-    {% if thr_dir == 'below' %}
-      {{ ents | select('search', '_next_low_tide$') | list | first | default('') }}
-    {% else %}
-      {{ ents | select('search', '_next_high_tide$') | list | first | default('') }}
-    {% endif %}
+  # Infer the estimated-height sensor from the station device.
   height_entity: >-
     {% set ents = device_entities(station_device) %}
-    {% if thr_dir == 'below' %}
-      {{ ents | select('search', '_next_low_tide_height$') | list | first | default('') }}
+    {{ ents | select('search', '_tide_height_estimated$') | list | first | default('') }}
+  # Match target: 'H' for above, 'L' for below.
+  target_type: "{{ 'L' if thr_dir == 'below' else 'H' }}"
+  # Sun projection — one sunrise / sunset time-of-day for the current
+  # location (drifts a minute a day; close enough for daylight gating).
+  sunrise_min: >-
+    {% set sr = as_datetime(state_attr(sun_entity, 'next_rising')) %}
+    {% if sr is none %}0
     {% else %}
-      {{ ents | select('search', '_next_high_tide_height$') | list | first | default('') }}
+      {% set l = sr.astimezone() %}{{ l.hour * 60 + l.minute }}
     {% endif %}
-  # Placeholders exposed to the user's title / message templates.
+  sunset_min: >-
+    {% set ss = as_datetime(state_attr(sun_entity, 'next_setting')) %}
+    {% if ss is none %}1440
+    {% else %}
+      {% set l = ss.astimezone() %}{{ l.hour * 60 + l.minute }}
+    {% endif %}
+  # First knot within [now, now + lookahead) that matches type + threshold
+  # + (optional) daytime window.
+  matched_knot: >-
+    {% set extrema = state_attr(height_entity, 'extrema') or [] %}
+    {% set thr_num = thr | float %}
+    {% set now_ts = now().timestamp() %}
+    {% set horizon = now_ts + (lookahead_h | int) * 3600 %}
+    {% set ns = namespace(match=none) %}
+    {% for k in extrema %}
+      {% if ns.match is none and k.type == target_type %}
+        {% set t = as_datetime(k.time) %}
+        {% set t_ts = t.timestamp() %}
+        {% if t_ts > now_ts and t_ts < horizon %}
+          {% set meets = (k.height <= thr_num) if thr_dir == 'below' else (k.height >= thr_num) %}
+          {% if meets %}
+            {% if not require_daylight %}
+              {% set ns.match = k %}
+            {% else %}
+              {% set l = t.astimezone() %}
+              {% set ev_min = l.hour * 60 + l.minute %}
+              {% if (sunrise_min | int) <= ev_min <= (sunset_min | int) %}
+                {% set ns.match = k %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.match }}
+  # Convenience placeholders for the notification templates.
   station_name: "{{ device_attr(station_device, 'name') or 'tide station' }}"
   event_time_local: >-
-    {% set ts = states(time_entity) %}
-    {{ as_datetime(ts).astimezone() if ts not in ('unknown', 'unavailable', 'none', '', none) else none }}
-  event_height: "{{ states(height_entity) }}"
-  event_unit: "{{ state_attr(height_entity, 'unit_of_measurement') or '' }}"
+    {{ as_datetime(matched_knot.time).astimezone() if matched_knot else none }}
+  event_height: "{{ matched_knot.height if matched_knot else '' }}"
+  event_unit: "{{ state_attr(height_entity, 'unit') or state_attr(height_entity, 'unit_of_measurement') or '' }}"
+  event_type: "{{ matched_knot.type if matched_knot else '' }}"
   when_day: >-
     {% set ev = event_time_local %}
     {% if ev is none %}soon
@@ -201,40 +239,7 @@ trigger:
 
 condition:
   - condition: template
-    value_template: >-
-      {% if time_entity == '' or height_entity == '' %}
-        false
-      {% else %}
-        {% set ts = states(time_entity) %}
-        {% if ts in ('unknown', 'unavailable', 'none', '', None) %}
-          false
-        {% else %}
-          {% set t = as_datetime(ts) %}
-          {% set future = t > now() %}
-          {% set within = (t - now()).total_seconds() < (lookahead_h | int) * 3600 %}
-          {% set h = states(height_entity) | float(0) %}
-          {% set meets = (h <= (thr | float)) if thr_dir == 'below' else (h >= (thr | float)) %}
-          {% if not (future and within and meets) %}
-            false
-          {% elif not require_daylight %}
-            true
-          {% else %}
-            {% set sr = as_datetime(state_attr(sun_entity, 'next_rising')) %}
-            {% set ss = as_datetime(state_attr(sun_entity, 'next_setting')) %}
-            {% if sr is none or ss is none %}
-              true
-            {% else %}
-              {% set sr_local = sr.astimezone() %}
-              {% set ss_local = ss.astimezone() %}
-              {% set event_local = t.astimezone() %}
-              {% set sr_min = sr_local.hour * 60 + sr_local.minute %}
-              {% set ss_min = ss_local.hour * 60 + ss_local.minute %}
-              {% set ev_min = event_local.hour * 60 + event_local.minute %}
-              {{ sr_min <= ev_min <= ss_min }}
-            {% endif %}
-          {% endif %}
-        {% endif %}
-      {% endif %}
+    value_template: "{{ matched_knot is not none }}"
 
 action:
   - variables:

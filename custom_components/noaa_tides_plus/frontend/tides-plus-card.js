@@ -393,10 +393,12 @@ class TidesPlusCard extends _TidesBase {
       .map(
         (s) => `
         <div class="station" data-station="${s.id}"
-             style="display:flex;align-items:center;padding:4px 16px;font-size:13px;">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
-          <strong>${s.label}</strong>
-          <span class="current" style="margin-left:8px;opacity:.85;"></span>
+             style="padding:6px 16px;font-size:13px;line-height:1.5;">
+          <div style="display:flex;align-items:center;margin-bottom:2px;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
+            <strong>${s.label}</strong>
+          </div>
+          <div class="current" style="opacity:.9;margin-left:18px;font-size:12px;"></div>
         </div>`,
       )
       .join("");
@@ -414,9 +416,31 @@ class TidesPlusCard extends _TidesBase {
       if (!el) continue;
       const y = interpolateAt(st.times, st.heights, st.derivs, at);
       if (y == null) { el.textContent = "· —"; continue; }
-      el.innerHTML = hovering
-        ? `· <strong>${y.toFixed(2)} ${u}</strong> @ ${fmtTimeShort(new Date(at), this._hass)}`
-        : `· <strong>${y.toFixed(2)} ${u}</strong> now`;
+
+      // Find nearest prev / next H/L across the full knot window.
+      let prev = null;
+      let next = null;
+      for (const k of st.allKnots) {
+        if (k.t <= at) {
+          if (!prev || k.t > prev.t) prev = k;
+        } else if (!next || k.t < next.t) {
+          next = k;
+        }
+      }
+      const timeStamp = hovering
+        ? `@ ${fmtTimeShort(new Date(at), this._hass)}`
+        : "now";
+      const knotLabel = (k) =>
+        k
+          ? `<span style="opacity:.7;">${fmtTimeShort(new Date(k.t), this._hass)}</span>
+             <strong style="font-variant-numeric:tabular-nums;">${k.y.toFixed(1)} ${u}</strong>
+             ${eventIcon(k.type, null)}`
+          : `<span style="opacity:.4;">—</span>`;
+      el.innerHTML = `
+        <span style="font-variant-numeric:tabular-nums;"><strong>${y.toFixed(1)} ${u}</strong></span>
+        <span style="opacity:.75;margin-left:4px;">${timeStamp}</span>
+        <span style="margin-left:14px;opacity:.6;">prev</span> ${knotLabel(prev)}
+        <span style="margin-left:14px;opacity:.6;">next</span> ${knotLabel(next)}`;
     }
   }
 
@@ -687,17 +711,6 @@ class TidesPlusCard extends _TidesBase {
         fontFamily: "var(--primary-font-family, sans-serif)",
         background: "transparent",
         events: {
-          // Update the legend with the hovered value/time; keep apex's own
-          // markers as the visual cursor.
-          mouseMove: function (_evt, _ctxA, opts) {
-            try {
-              const idx = opts && opts.dataPointIndex;
-              if (idx == null || idx < 0) return;
-              const anySeries = series[0] && series[0].data;
-              if (!anySeries || !anySeries[idx]) return;
-              self._updateLegend(anySeries[idx].x);
-            } catch (_) {}
-          },
           mouseLeave: function () {
             self._updateLegend(null);
           },
@@ -727,8 +740,24 @@ class TidesPlusCard extends _TidesBase {
         title: { text: unitLabel(unit) },
         labels: { formatter: (v) => `${v.toFixed(1)}` },
       },
-      // Tooltip disabled — hover updates the legend instead.
-      tooltip: { enabled: false },
+      // We piggyback on apex's shared tooltip machinery to get a callback
+      // per hover position, but render an empty tooltip so nothing covers
+      // the graph. The real feedback goes into our legend below the chart.
+      tooltip: {
+        enabled: true,
+        shared: true,
+        intersect: false,
+        followCursor: false,
+        custom: function ({ dataPointIndex, w }) {
+          try {
+            const xs = w && w.globals && w.globals.seriesX && w.globals.seriesX[0];
+            if (xs && dataPointIndex != null && dataPointIndex >= 0 && xs[dataPointIndex] != null) {
+              self._updateLegend(xs[dataPointIndex]);
+            }
+          } catch (_) {}
+          return "";
+        },
+      },
       grid: { borderColor: "rgba(0,0,0,0.08)" },
       legend: { show: false },
       annotations: { xaxis: xAnnotations },
@@ -765,20 +794,19 @@ class TidesPlusSummaryCard extends _TidesBase {
     );
 
     const stationsHtml = ctx.perStation.map((s) => {
-      const highs = s.dayKnots.filter((k) => k.type === "H").sort((a, b) => a.t - b.t);
-      const lows = s.dayKnots.filter((k) => k.type === "L").sort((a, b) => a.t - b.t);
       const allY = s.dayKnots.map((k) => k.y);
       const swing = allY.length >= 2 ? Math.max(...allY) - Math.min(...allY) : null;
-      const currentTxt = s.currentY != null
-        ? ` <strong>${s.currentY.toFixed(2)} ${u}</strong> now`
+      const swingHtml = swing != null
+        ? `<span style="font-size:12px;opacity:.7;margin-left:auto;font-variant-numeric:tabular-nums;">Swing <strong>${swing.toFixed(1)} ${u}</strong></span>`
         : "";
       return `
         <div style="padding: 10px 16px 12px; border-top: 1px solid rgba(0,0,0,0.06);">
           <div style="display:flex;align-items:center;margin-bottom:6px;">
             <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
-            <span style="font-size:14px;"><strong>${s.label}</strong> ·${currentTxt}</span>
+            <span style="font-size:14px;"><strong>${s.label}</strong></span>
+            ${swingHtml}
           </div>
-          ${summaryTable(highs, lows, swing, u, hass)}
+          ${chronologicalTable(s, ctx, u, hass)}
         </div>`;
     }).join("");
 
@@ -807,32 +835,65 @@ function headerHtml(ctx, rendererLabel) {
   </div>`;
 }
 
-function summaryTable(highs, lows, swing, unit, hass) {
-  // A real HTML table so the two time+value pairs on each row line up
-  // regardless of digit width. Left column is the row label.
-  const cell = (k) =>
-    k
-      ? `<td style="padding:2px 12px 2px 0;font-variant-numeric:tabular-nums;color:var(--secondary-text-color,#666);">${fmtTimeShort(new Date(k.t), hass)}</td>
-         <td style="padding:2px 20px 2px 0;font-variant-numeric:tabular-nums;"><strong>${k.y.toFixed(1)} ${unit}</strong></td>`
-      : `<td colspan="2" style="padding:2px 20px 2px 0;opacity:.4;">—</td>`;
-  const row = (label, arr) =>
-    `<tr>
-       <td style="padding:2px 20px 2px 0;color:var(--secondary-text-color,#666);">${label}</td>
-       ${cell(arr[0] || null)}
-       ${cell(arr[1] || null)}
-     </tr>`;
-  const swingRow = swing != null
-    ? `<tr>
-         <td style="padding:2px 20px 2px 0;color:var(--secondary-text-color,#666);">Swing</td>
-         <td colspan="4" style="padding:2px 0;font-variant-numeric:tabular-nums;"><strong>${swing.toFixed(1)} ${unit}</strong></td>
-       </tr>`
-    : "";
+function eventIcon(kind, rising) {
+  // Uses HA's global <ha-icon> element (registered by HA frontend) so we get
+  // the same MDI set the rest of the UI uses. Colours match the tide-state
+  // semantics: rising water = green up, falling water = orange down.
+  const mdi =
+    kind === "H" ? "mdi:wave-arrow-up"
+    : kind === "L" ? "mdi:wave-arrow-down"
+    : rising ? "mdi:trending-up"
+    : "mdi:trending-down";
+  const color =
+    kind === "H" ? "#0e8a5f"
+    : kind === "L" ? "#c2410c"
+    : rising ? "#0e8a5f"
+    : "#c2410c";
+  return `<ha-icon icon="${mdi}" style="--mdc-icon-size:18px;color:${color};vertical-align:middle;"></ha-icon>`;
+}
+
+function currentDirection(perStationEntry) {
+  const st = perStationEntry;
+  const t0 = Date.now();
+  const dt = 60 * 1000;
+  const yBefore = interpolateAt(st.times, st.heights, st.derivs, t0 - dt);
+  const yAfter = interpolateAt(st.times, st.heights, st.derivs, t0 + dt);
+  if (yBefore == null || yAfter == null) return null;
+  return yAfter >= yBefore;
+}
+
+function chronologicalTable(station, ctx, unit, hass) {
+  // All of today's H/L events plus a "now" pseudo-event slotted into the
+  // sequence by timestamp.
+  const events = station.dayKnots
+    .map((k) => ({ t: k.t, y: k.y, kind: k.type }));
+  const now = Date.now();
+  if (station.currentY != null && now >= ctx.tMin && now <= ctx.tMax) {
+    events.push({
+      t: now,
+      y: station.currentY,
+      kind: "NOW",
+      rising: currentDirection(station),
+    });
+  }
+  events.sort((a, b) => a.t - b.t);
+
+  const rows = events.map((e) => {
+    const highlight = e.kind === "NOW"
+      ? "background: rgba(120, 144, 156, 0.08);"
+      : "";
+    const timeLabel = e.kind === "NOW"
+      ? `<span style="font-weight:600;">now</span>`
+      : fmtTimeShort(new Date(e.t), hass);
+    return `<tr style="${highlight}">
+      <td style="padding:3px 12px 3px 0;font-variant-numeric:tabular-nums;color:var(--secondary-text-color,#666);text-align:left;white-space:nowrap;">${timeLabel}</td>
+      <td style="padding:3px 8px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">${e.y.toFixed(1)} ${unit}</td>
+      <td style="padding:3px 0 3px 4px;text-align:left;line-height:0;">${eventIcon(e.kind, e.rising)}</td>
+    </tr>`;
+  }).join("");
+
   return `<table style="font-size:13px;border-collapse:collapse;">
-    <tbody>
-      ${row("Highs", highs)}
-      ${row("Lows", lows)}
-      ${swingRow}
-    </tbody>
+    <tbody>${rows}</tbody>
   </table>`;
 }
 

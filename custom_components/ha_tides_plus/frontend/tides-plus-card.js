@@ -6,7 +6,7 @@
  *   custom:tides-plus-card           — the day-long chart (native SVG or ApexCharts)
  *   custom:tides-plus-summary-card   — tabular H/L breakdown for one or more stations
  *
- * Both read the same hi/lo series from the noaa_tides_plus/hilo_series
+ * Both read the same hi/lo series from the ha_tides_plus/hilo_series
  * WebSocket command (metres, UTC). Interpolation is Fritsch-Carlson PCHIP,
  * matching interpolation.py so peaks and troughs have zero slope.
  *
@@ -41,7 +41,7 @@ const NIGHT_FILL = "rgba(120, 144, 156, 0.18)";
 const NOW_STROKE = "rgba(198, 40, 40, 0.85)";
 
 
-const APEX_URL = "/noaa_tides_plus/apexcharts.min.js";
+const APEX_URL = "/ha_tides_plus/apexcharts.min.js";
 
 const NAV_BTN_STYLE =
   "background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,0.12));" +
@@ -287,7 +287,7 @@ class _TidesBase extends HTMLElement {
     this._loading.add(id);
     try {
       const res = await this._hass.callWS({
-        type: "noaa_tides_plus/hilo_series",
+        type: "ha_tides_plus/hilo_series",
         station_id: id,
       });
       this._series.set(id, res);

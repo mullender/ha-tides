@@ -1,7 +1,7 @@
 """WebSocket commands the ``tides-plus-card`` Lovelace card uses to fetch
 the cached hi/lo series without going through recorder history.
 
-Exposes ``noaa_tides_plus/hilo_series`` which returns the coordinator's
+Exposes ``ha_tides_plus/hilo_series`` which returns the coordinator's
 knot list for one station as JSON (metres, UTC ISO timestamps). The
 card is responsible for unit conversion and PCHIP interpolation.
 """

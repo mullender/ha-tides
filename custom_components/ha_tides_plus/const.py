@@ -1,6 +1,6 @@
 """Constants for the NOAA Tides Plus integration."""
 
-DOMAIN = "noaa_tides_plus"
+DOMAIN = "ha_tides_plus"
 
 CONF_STATION_ID = "station_id"
 CONF_STATION_NAME = "station_name"

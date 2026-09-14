@@ -1,4 +1,4 @@
-"""Fire ``noaa_tides_plus_high_tide`` / ``_low_tide`` events on the bus
+"""Fire ``ha_tides_plus_high_tide`` / ``_low_tide`` events on the bus
 at each future extremum, so users can drive ``event`` triggers instead
 of chasing timestamp-sensor state transitions.
 """

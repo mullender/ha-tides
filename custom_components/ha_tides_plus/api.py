@@ -11,7 +11,7 @@ from aiohttp import ClientError, ClientSession
 
 _LOGGER = logging.getLogger(__name__)
 
-APPLICATION = "noaa_tides_plus"
+APPLICATION = "ha_tides_plus"
 MDAPI_STATION_URL = (
     "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/{station_id}.json"
 )

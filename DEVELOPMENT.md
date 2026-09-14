@@ -1,6 +1,6 @@
 # Development setup
 
-How to build, run, and debug the `noaa_tides_plus` custom integration.
+How to build, run, and debug the `ha_tides_plus` custom integration.
 
 ## 1. Prerequisites
 
@@ -17,7 +17,7 @@ How to build, run, and debug the `noaa_tides_plus` custom integration.
 ```
 ha_tides/
   custom_components/
-    noaa_tides_plus/
+    ha_tides_plus/
       __init__.py
       manifest.json
       config_flow.py
@@ -143,7 +143,7 @@ Restart HA once for the change to take effect.
 }
 ```
 
-Set breakpoints in `custom_components/noaa_tides_plus/*.py`. Attach the
+Set breakpoints in `custom_components/ha_tides_plus/*.py`. Attach the
 debugger. Trigger the code path by reloading the integration or waiting
 for the coordinator refresh. Set `wait: true` in the `debugpy` config if
 you need to catch startup code.
@@ -159,7 +159,7 @@ tracking down coordinator or config-flow behaviour.
 logger:
   default: warning
   logs:
-    custom_components.noaa_tides_plus: debug
+    custom_components.ha_tides_plus: debug
 ```
 
 Tail:
@@ -171,7 +171,7 @@ docker compose logs -f homeassistant
 For a shorter feedback loop, `grep` for the integration domain:
 
 ```
-docker compose logs -f homeassistant | grep noaa_tides_plus
+docker compose logs -f homeassistant | grep ha_tides_plus
 ```
 
 ## 6. Devcontainer alternative (heavier)
@@ -180,8 +180,8 @@ Use this only if you need to step into HA core sources or modify HA core.
 
 - Clone `https://github.com/home-assistant/core` next to `ha_tides`.
 - Open `core/` in VS Code. Reopen in devcontainer.
-- Bind-mount `ha_tides/custom_components/noaa_tides_plus` into
-  `core/config/custom_components/noaa_tides_plus`.
+- Bind-mount `ha_tides/custom_components/ha_tides_plus` into
+  `core/config/custom_components/ha_tides_plus`.
 - Start HA from the devcontainer task list: `Run Home Assistant Core`.
 
 Trade-off: larger image, slower boot, but full source access.
@@ -224,7 +224,7 @@ Match HA core conventions:
 pip install ruff mypy
 ruff check custom_components/ tests/
 ruff format custom_components/ tests/
-mypy custom_components/noaa_tides_plus
+mypy custom_components/ha_tides_plus
 ```
 
 Add a pre-commit hook if you want automatic runs on `git commit`.
@@ -242,11 +242,11 @@ Add a pre-commit hook if you want automatic runs on `git commit`.
 }
 ```
 
-`manifest.json` (`custom_components/noaa_tides_plus/manifest.json`):
+`manifest.json` (`custom_components/ha_tides_plus/manifest.json`):
 
 ```json
 {
-  "domain": "noaa_tides_plus",
+  "domain": "ha_tides_plus",
   "name": "NOAA Tides Plus",
   "version": "0.1.0",
   "codeowners": ["@mullender"],
@@ -269,7 +269,7 @@ Publish:
 ## 10. NOAA API notes
 
 - Base URL: `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
-- No API key. Set `application=noaa_tides_plus` on every call — NOAA asks
+- No API key. Set `application=ha_tides_plus` on every call — NOAA asks
   for this for traffic attribution.
 - Rate limits are not published. One call per 12 h per station is well
   under any reasonable limit. Back off with exponential retry on HTTP 5xx.
@@ -278,7 +278,7 @@ Publish:
 ```
 https://api.tidesandcurrents.noaa.gov/api/prod/datagetter
   ?product=predictions
-  &application=noaa_tides_plus
+  &application=ha_tides_plus
   &begin_date=20260911
   &range=168
   &datum=MLLW

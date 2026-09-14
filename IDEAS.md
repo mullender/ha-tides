@@ -8,7 +8,7 @@ Dashboards
 - Ship a standard tides widget (custom Lovelace card): current height gauge, 48 h curve, next high/low with countdown.
 - Chart card: date-range selector (prev day / next day arrows + date picker) so users can review tomorrow's tides or look back at what happened yesterday, not just "today". Data is already fetched (7-day window in coordinator + 48 h lookback) so it's a client-side navigation change; the WebSocket command may need to accept an optional [begin, end] range for correctness.
 - Delivery: bundle the compiled JS inside the integration (e.g.
-  custom_components/noaa_tides_plus/frontend/tide-card.js), have the Python
+  custom_components/ha_tides_plus/frontend/tide-card.js), have the Python
   component call hass.http.async_register_static_paths() to expose the file,
   then auto-register the module as a Lovelace resource on setup so users get
   the card without any HACS-frontend or manual "add resource" step. Community
@@ -19,7 +19,7 @@ Dashboards
 
 Automations
 - Ship a blueprint for the most common patterns (e.g. "run when tide crosses X ft rising", "notify 30 min before next low tide") so users don't have to hand-roll templates.
-- Bundle the blueprints in-integration under blueprints/automation/noaa_tides_plus/ so they show up under Settings → Automations & scenes → Blueprints without a separate HACS install. Reference: HA docs on shipping blueprints from a custom_component.
+- Bundle the blueprints in-integration under blueprints/automation/ha_tides_plus/ so they show up under Settings → Automations & scenes → Blueprints without a separate HACS install. Reference: HA docs on shipping blueprints from a custom_component.
 - Starter blueprint ideas:
   - "Daytime ultra-low tide alert" — fire when a next low tide is (a) below threshold X, (b) between sunrise and sunset, (c) within Y hours from now — good for tidepool exploration, boat launching windows.
   - "Slack window notification" — notify N minutes before high or low so users hit the "still water" window.

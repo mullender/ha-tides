@@ -29,7 +29,7 @@ sensors, events, and a rising/falling state derived from hi/lo data.
 - Datum: `MLLW` (default; expose as an option)
 - Interval: `hilo` by default. Option to switch to `6` (6-minute) for a
   higher-fidelity curve.
-- No API key. Set `application=noaa_tides_plus` per NOAA guidance.
+- No API key. Set `application=ha_tides_plus` per NOAA guidance.
 - Station metadata:
   `https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions`
 
@@ -97,8 +97,8 @@ transition. No polling loop.
 
 Fire on the HA event bus:
 
-- `noaa_tides_plus_high_tide` at each high-tide knot.
-- `noaa_tides_plus_low_tide` at each low-tide knot.
+- `ha_tides_plus_high_tide` at each high-tide knot.
+- `ha_tides_plus_low_tide` at each low-tide knot.
 
 Payload:
 
@@ -146,7 +146,7 @@ Options flow:
 ## 11. Distribution
 
 Recommendation: ship first as a HACS custom component under a new domain,
-`noaa_tides_plus`.
+`ha_tides_plus`.
 
 - Fast iteration. No HA core review cycle.
 - The user installs via HACS → Custom repositories.

@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="custom_components/noaa_tides_plus/brand/icon.png" alt="Tides Plus" width="128" height="128">
+  <img src="custom_components/ha_tides_plus/brand/icon.png" alt="Tides Plus" width="128" height="128">
 </p>
 
 <h1 align="center">Tides Plus (USA, NOAA)</h1>
 
 Home Assistant custom integration for NOAA tide predictions.
 
-Domain: `noaa_tides_plus`. Distributed via HACS.
+Domain: `ha_tides_plus`. Distributed via HACS.
 
 See [`DESIGN.md`](DESIGN.md) for architecture and [`DEVELOPMENT.md`](DEVELOPMENT.md)
 for the dev loop.

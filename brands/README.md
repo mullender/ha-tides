@@ -1,9 +1,9 @@
 # Brand assets
 
 Design source for the Tides Plus brand icon. Rendered PNGs are
-committed under `custom_components/noaa_tides_plus/brand/`, where Home
+committed under `custom_components/ha_tides_plus/brand/`, where Home
 Assistant 2026.3+ serves them via
-`/api/brands/integration/noaa_tides_plus/<image>` — see the
+`/api/brands/integration/ha_tides_plus/<image>` — see the
 [brands proxy API blog post][1].
 
 [1]: https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/
@@ -22,7 +22,7 @@ Requires Pillow, which the running HA container already has:
 docker cp brands/render_icon.py ha_dev:/tmp/render_icon.py
 docker exec ha_dev sh -c 'rm -rf /tmp/icons && python3 /tmp/render_icon.py /tmp/icons'
 for f in icon.png icon@2x.png logo.png logo@2x.png; do
-  docker cp "ha_dev:/tmp/icons/$f" "custom_components/noaa_tides_plus/brand/$f"
+  docker cp "ha_dev:/tmp/icons/$f" "custom_components/ha_tides_plus/brand/$f"
 done
 docker cp ha_dev:/tmp/icons/favicon.png brands/favicon.png
 ```

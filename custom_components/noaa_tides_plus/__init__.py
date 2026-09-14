@@ -37,7 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:
         await _enrich_entry_with_station_metadata(hass, entry, station_id)
 
     _sync_entry_title(hass, entry, station_id)
-    _sync_device_name(hass, station_id, entry.data)
+    _sync_device_name(hass, entry, station_id)
 
     datum: str = entry.options.get(CONF_DATUM, DEFAULT_DATUM)
 
@@ -77,7 +77,7 @@ def _sync_entry_title(
 
 
 def _sync_device_name(
-    hass: HomeAssistant, station_id: str, data: dict
+    hass: HomeAssistant, entry: NoaaTidesEntry, station_id: str
 ) -> None:
     """Rename an existing device to reflect (possibly-backfilled) metadata.
 
@@ -86,11 +86,15 @@ def _sync_device_name(
     Skips devices the user has manually renamed (``name_by_user`` set).
     """
     registry = dr.async_get(hass)
-    device = registry.async_get_device(identifiers={(DOMAIN, station_id)})
+    device = registry.async_get_device_by_identifier(
+        (DOMAIN, station_id), config_entry_id=entry.entry_id
+    )
     if device is None or device.name_by_user is not None:
         return
     new_name = format_device_name(
-        station_id, data.get(CONF_STATION_NAME), data.get(CONF_STATION_STATE)
+        station_id,
+        entry.data.get(CONF_STATION_NAME),
+        entry.data.get(CONF_STATION_STATE),
     )
     if device.name != new_name:
         registry.async_update_device(device.id, name=new_name)

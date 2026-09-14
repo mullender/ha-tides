@@ -27,6 +27,7 @@ from .helpers import format_device_name
 from .interpolation import compute_tide_state, interpolate_height
 
 Kind = Literal["high", "low"]
+When = Literal["next", "previous"]
 
 _KIND_ICON = {"high": "mdi:wave-arrow-up", "low": "mdi:wave-arrow-down"}
 _STATE_ICON = {
@@ -60,37 +61,64 @@ async def async_setup_entry(
         ),
     )
 
-    async_add_entities(
-        [
-            NextTideTimeSensor(coordinator, "high", device_info, station_id),
-            NextTideTimeSensor(coordinator, "low", device_info, station_id),
-            NextTideHeightSensor(coordinator, "high", device_info, station_id),
-            NextTideHeightSensor(coordinator, "low", device_info, station_id),
-            TideHeightSensor(coordinator, device_info, station_id),
-            TideStateSensor(coordinator, device_info, station_id),
-        ]
-    )
+    entities: list[SensorEntity] = []
+    for when in ("previous", "next"):
+        for kind in ("high", "low"):
+            entities.append(
+                TideExtremumTimeSensor(coordinator, kind, when, device_info, station_id)
+            )
+            entities.append(
+                TideExtremumHeightSensor(coordinator, kind, when, device_info, station_id)
+            )
+    entities.append(TideHeightSensor(coordinator, device_info, station_id))
+    entities.append(TideStateSensor(coordinator, device_info, station_id))
+
+    async_add_entities(entities)
 
 
-def _next_extremum(
-    data: list[TideExtremum] | None, kind: Kind
+def _pick_extremum(
+    data: list[TideExtremum] | None,
+    kind: Kind,
+    when: When,
+    now: datetime,
 ) -> TideExtremum | None:
+    """Return the nearest future ("next") or past ("previous") extremum of
+    the given kind, or None if the knot window does not cover ``now``.
+    """
     if not data:
         return None
     marker = "H" if kind == "high" else "L"
-    now = dt_util.utcnow()
-    return next((p for p in data if p.type == marker and p.time > now), None)
+    if when == "next":
+        return next((p for p in data if p.type == marker and p.time > now), None)
+    return next(
+        (p for p in reversed(data) if p.type == marker and p.time <= now), None
+    )
 
 
 class _NoaaTidesBase(CoordinatorEntity[NoaaTidesCoordinator], SensorEntity):
-    """Common bits for NOAA Tides Plus sensors."""
+    """Common bits for NOAA Tides Plus sensors.
+
+    Emits a state write every minute so ``native_value`` (which is
+    evaluated against ``dt_util.utcnow()``) stays fresh between the
+    coordinator's 12 h fetches.
+    """
 
     _attr_has_entity_name = True
     _attr_attribution = ATTRIBUTION
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_track_time_interval(self.hass, self._tick, _LIVE_REFRESH)
+        )
 
-class NextTideTimeSensor(_NoaaTidesBase):
-    """Timestamp of the next high or low tide."""
+    @callback
+    def _tick(self, _now: datetime) -> None:
+        self.async_write_ha_state()
+
+
+class TideExtremumTimeSensor(_NoaaTidesBase):
+    """Timestamp of the previous or next high/low tide."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
@@ -98,24 +126,28 @@ class NextTideTimeSensor(_NoaaTidesBase):
         self,
         coordinator: NoaaTidesCoordinator,
         kind: Kind,
+        when: When,
         device_info: DeviceInfo,
         station_id: str,
     ) -> None:
         super().__init__(coordinator)
         self._kind: Kind = kind
+        self._when: When = when
         self._attr_device_info = device_info
-        self._attr_unique_id = f"{station_id}_next_{kind}_tide"
-        self._attr_name = f"Next {kind} tide"
+        self._attr_unique_id = f"{station_id}_{when}_{kind}_tide"
+        self._attr_name = f"{when.capitalize()} {kind} tide"
         self._attr_icon = _KIND_ICON[kind]
 
     @property
     def native_value(self) -> datetime | None:
-        p = _next_extremum(self.coordinator.data, self._kind)
+        p = _pick_extremum(
+            self.coordinator.data, self._kind, self._when, dt_util.utcnow()
+        )
         return p.time if p else None
 
 
-class NextTideHeightSensor(_NoaaTidesBase):
-    """Predicted water height at the next high or low tide.
+class TideExtremumHeightSensor(_NoaaTidesBase):
+    """Predicted water height at the previous or next high/low tide.
 
     Stored in metres; HA converts to the user's preferred length unit at
     display time via ``SensorDeviceClass.DISTANCE``.
@@ -129,24 +161,28 @@ class NextTideHeightSensor(_NoaaTidesBase):
         self,
         coordinator: NoaaTidesCoordinator,
         kind: Kind,
+        when: When,
         device_info: DeviceInfo,
         station_id: str,
     ) -> None:
         super().__init__(coordinator)
         self._kind: Kind = kind
+        self._when: When = when
         self._attr_device_info = device_info
-        self._attr_unique_id = f"{station_id}_next_{kind}_height"
-        self._attr_name = f"Next {kind} tide height"
+        self._attr_unique_id = f"{station_id}_{when}_{kind}_height"
+        self._attr_name = f"{when.capitalize()} {kind} tide height"
         self._attr_icon = _KIND_ICON[kind]
 
     @property
     def native_value(self) -> float | None:
-        p = _next_extremum(self.coordinator.data, self._kind)
+        p = _pick_extremum(
+            self.coordinator.data, self._kind, self._when, dt_util.utcnow()
+        )
         return p.height if p else None
 
 
 class TideHeightSensor(_NoaaTidesBase):
-    """PCHIP-interpolated current water height, updated once per minute."""
+    """PCHIP-interpolated current water height."""
 
     _attr_device_class = SensorDeviceClass.DISTANCE
     _attr_native_unit_of_measurement = UnitOfLength.METERS
@@ -167,16 +203,6 @@ class TideHeightSensor(_NoaaTidesBase):
     @property
     def native_value(self) -> float | None:
         return interpolate_height(self.coordinator.data or [], dt_util.utcnow())
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_time_interval(self.hass, self._tick, _LIVE_REFRESH)
-        )
-
-    @callback
-    def _tick(self, _now: datetime) -> None:
-        self.async_write_ha_state()
 
 
 class TideStateSensor(_NoaaTidesBase):
@@ -203,13 +229,3 @@ class TideStateSensor(_NoaaTidesBase):
     @property
     def icon(self) -> str | None:
         return _STATE_ICON.get(self.native_value or "", "mdi:sine-wave")
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_time_interval(self.hass, self._tick, _LIVE_REFRESH)
-        )
-
-    @callback
-    def _tick(self, _now: datetime) -> None:
-        self.async_write_ha_state()

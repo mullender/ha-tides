@@ -321,7 +321,8 @@ class _TidesBase extends HTMLElement {
     if (!isFinite(heightMin)) heightMin = 0;
     if (!isFinite(heightMax)) heightMax = 1;
     if (heightMin === heightMax) heightMax = heightMin + 1;
-    const pad = (heightMax - heightMin) * 0.12;
+    // Extra headroom for the H labels above and footroom for L labels below.
+    const pad = (heightMax - heightMin) * 0.22;
     heightMin -= pad;
     heightMax += pad;
 
@@ -505,6 +506,7 @@ class TidesPlusCard extends _TidesBase {
     }
 
     let stationsSvg = "";
+    let labelsSvg = "";
     for (const st of perStation) {
       if (!st.samples.length) continue;
       const pathD =
@@ -517,7 +519,17 @@ class TidesPlusCard extends _TidesBase {
       stationsSvg += `<path d="${areaD}" fill="${st.color}" fill-opacity="${AREA_OPACITY}" />`;
       stationsSvg += `<path d="${pathD}" fill="none" stroke="${st.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />`;
       for (const k of st.dayKnots) {
-        stationsSvg += `<circle cx="${xOf(k.t).toFixed(2)}" cy="${yOf(k.y).toFixed(2)}" r="3.5" fill="${st.color}" />`;
+        const cx = xOf(k.t);
+        const cy = yOf(k.y);
+        stationsSvg += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="3.5" fill="${st.color}" />`;
+        // Label above H knots, below L knots. A white stroke around the text
+        // acts as an outline so it stays legible over the shaded area fill.
+        const dy = k.type === "H" ? -10 : 18;
+        const label = `${fmtTimeShort(new Date(k.t), hass)} · ${k.y.toFixed(1)} ${unitLabel(unit)}`;
+        labelsSvg += `<text x="${cx.toFixed(2)}" y="${(cy + dy).toFixed(2)}"
+          font-size="10" font-weight="600" text-anchor="middle"
+          fill="${st.color}"
+          paint-order="stroke fill" stroke="var(--card-background-color, #fff)" stroke-width="3">${label}</text>`;
       }
       if (st.currentY != null) {
         const cx = xOf(now);
@@ -525,6 +537,7 @@ class TidesPlusCard extends _TidesBase {
         stationsSvg += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="4.5" fill="#fff" stroke="${st.color}" stroke-width="2" />`;
       }
     }
+    stationsSvg += labelsSvg;
 
     let nowMark = "";
     if (now >= tMin && now <= tMax) {
@@ -675,6 +688,33 @@ class TidesPlusCard extends _TidesBase {
       }
     });
 
+    // Permanent labels next to each hi/lo knot: time + height. Positioned
+    // above H's and below L's so they don't cross the curve.
+    const pointAnnotations = [];
+    perStation.forEach((st) => {
+      for (const k of st.dayKnots) {
+        pointAnnotations.push({
+          x: k.t,
+          y: k.y,
+          seriesIndex: 0,
+          marker: { size: 0, fillColor: "transparent", strokeColor: "transparent" },
+          label: {
+            text: `${fmtTimeShort(new Date(k.t), hass)} · ${k.y.toFixed(1)} ${unitLabel(unit)}`,
+            offsetY: k.type === "H" ? -8 : 22,
+            borderWidth: 0,
+            borderColor: "transparent",
+            style: {
+              background: "transparent",
+              color: st.color,
+              fontSize: "10px",
+              fontWeight: 600,
+              padding: { top: 0, bottom: 0, left: 2, right: 2 },
+            },
+          },
+        });
+      }
+    });
+
     const xAnnotations = [];
     if (sunTimes.sunrise) {
       xAnnotations.push({
@@ -760,7 +800,7 @@ class TidesPlusCard extends _TidesBase {
       },
       grid: { borderColor: "rgba(0,0,0,0.08)" },
       legend: { show: false },
-      annotations: { xaxis: xAnnotations },
+      annotations: { xaxis: xAnnotations, points: pointAnnotations },
     };
   }
 }

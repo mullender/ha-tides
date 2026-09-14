@@ -8,8 +8,9 @@ Home Assistant custom integration for NOAA tide predictions.
 
 Domain: `ha_tides_plus`. Distributed via HACS.
 
-See [`DESIGN.md`](DESIGN.md) for architecture and [`DEVELOPMENT.md`](DEVELOPMENT.md)
-for the dev loop.
+See [`DESIGN.md`](DESIGN.md) for architecture, [`DEVELOPMENT.md`](DEVELOPMENT.md)
+for the dev loop, and [`blueprints/`](blueprints/) for the automation
+blueprints shipped with the integration.
 
 ## Quick start (development)
 

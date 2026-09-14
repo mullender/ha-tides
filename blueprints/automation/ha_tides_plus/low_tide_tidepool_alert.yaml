@@ -1,0 +1,118 @@
+blueprint:
+  name: Low-tide tidepool alert
+  description: >
+    Notify when an upcoming low tide is at or below a threshold height AND
+    falls during daytime. Fires the specified number of minutes before the
+    low so you have time to grab your boots. Uses the timestamp and height
+    sensors from the Tides Plus (USA, NOAA) integration.
+  domain: automation
+  source_url: https://raw.githubusercontent.com/mullender/ha-tides/main/blueprints/automation/ha_tides_plus/low_tide_tidepool_alert.yaml
+  input:
+    next_low_time:
+      name: Next low-tide time
+      description: >
+        Timestamp sensor from Tides Plus, usually named
+        sensor.<station>_next_low_tide.
+      selector:
+        entity:
+          filter:
+            - integration: ha_tides_plus
+              domain: sensor
+    next_low_height:
+      name: Next low-tide height
+      description: >
+        Distance sensor from Tides Plus, usually named
+        sensor.<station>_next_low_tide_height.
+      selector:
+        entity:
+          filter:
+            - integration: ha_tides_plus
+              domain: sensor
+    height_threshold:
+      name: Height threshold
+      description: >
+        Notify only when the low is at or below this height, expressed in
+        the height sensor's unit (ft or m).
+      default: 1.0
+      selector:
+        number:
+          min: -5
+          max: 20
+          step: 0.1
+          mode: box
+    lead_time_minutes:
+      name: Lead time
+      description: How far ahead of the low tide to fire the notification.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 5
+          mode: slider
+          unit_of_measurement: min
+    sun_entity:
+      name: Sun entity
+      description: Only fire when the sun is above the horizon here.
+      default: sun.sun
+      selector:
+        entity:
+          filter:
+            domain: sun
+    notify_service:
+      name: Notification service
+      description: >
+        Notify service to call, for example
+        notify.mobile_app_your_phone,
+        notify.notify,
+        notify.persistent_notification.
+      default: notify.persistent_notification
+      selector:
+        text: {}
+    notification_title:
+      name: Notification title
+      default: Low tide alert
+      selector:
+        text: {}
+
+mode: single
+max_exceeded: silent
+
+variables:
+  next_low_time_entity: !input next_low_time
+  next_low_height_entity: !input next_low_height
+  lead_min: !input lead_time_minutes
+
+trigger:
+  - platform: template
+    # A time-referenced template trigger re-evaluates every minute (HA sets
+    # up time tracking whenever the template calls now()). Fires when we
+    # cross the "lead_min before the low tide" moment.
+    value_template: >-
+      {% set ts = states(next_low_time_entity) %}
+      {% if ts in ('unknown', 'unavailable', 'none', '', None) %}
+        false
+      {% else %}
+        {% set t = as_datetime(ts) %}
+        {% set target = t - timedelta(minutes=(lead_min | int)) %}
+        {% set delta = (target - now()).total_seconds() %}
+        {{ 0 <= delta < 60 }}
+      {% endif %}
+
+condition:
+  - condition: numeric_state
+    entity_id: !input next_low_height
+    below: !input height_threshold
+  - condition: state
+    entity_id: !input sun_entity
+    state: above_horizon
+
+action:
+  - service: !input notify_service
+    data:
+      title: !input notification_title
+      message: >-
+        Low tide of {{ states(next_low_height_entity) }}
+        {{ state_attr(next_low_height_entity, 'unit_of_measurement') }}
+        at {{ as_datetime(states(next_low_time_entity)).strftime('%-I:%M %p') }} —
+        pack your boots.

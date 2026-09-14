@@ -46,6 +46,11 @@ const VIEW = { w: 800, h: 240 };
 
 const APEX_URL = "/noaa_tides_plus/apexcharts.min.js";
 
+const NAV_BTN_STYLE =
+  "background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,0.12));" +
+  "color:var(--primary-text-color,inherit);border-radius:4px;padding:2px 8px;" +
+  "cursor:pointer;font-size:13px;line-height:1;";
+
 
 // ---------- PCHIP (mirrors interpolation.py) ----------
 
@@ -255,6 +260,12 @@ class _TidesBase extends HTMLElement {
     }
   }
 
+  _computeWindow() {
+    // Default: today, 00:00 → 24:00 local.
+    const midnight = localMidnight();
+    return { tMin: midnight.getTime(), tMax: midnight.getTime() + 86400000 };
+  }
+
   _prepare() {
     const hass = this._hass;
     const stations = this._config.stations;
@@ -264,10 +275,7 @@ class _TidesBase extends HTMLElement {
     );
     if (!anyLoaded) return null;
 
-    const midnight = localMidnight();
-    const dayEnd = new Date(midnight.getTime() + 86400000);
-    const tMin = midnight.getTime();
-    const tMax = dayEnd.getTime();
+    const { tMin, tMax } = this._computeWindow();
 
     const perStation = [];
     let heightMin = Infinity;
@@ -318,6 +326,8 @@ class _TidesBase extends HTMLElement {
 
     if (!perStation.length) return null;
 
+    const hasSamplesInWindow = perStation.some((st) => st.samples.length > 0);
+
     if (!isFinite(heightMin)) heightMin = 0;
     if (!isFinite(heightMax)) heightMax = 1;
     if (heightMin === heightMax) heightMax = heightMin + 1;
@@ -328,6 +338,7 @@ class _TidesBase extends HTMLElement {
 
     return {
       hass, unit, perStation, tMin, tMax, heightMin, heightMax,
+      hasSamplesInWindow,
       sunTimes: daySunTimes(hass, this._config.sun_entity),
       now: Date.now(),
     };
@@ -344,6 +355,7 @@ class TidesPlusCard extends _TidesBase {
     this._chartCtx = null;
     this._apexChart = null;
     this._renderer = null;
+    this._dayOffset = 0;   // integer days from today, only meaningful in anchor=day
   }
 
   disconnectedCallback() {
@@ -355,6 +367,9 @@ class TidesPlusCard extends _TidesBase {
     return {
       sun_entity: "sun.sun",
       renderer: "apex",
+      anchor: "day",
+      hours_before: 0,
+      hours_after: 24,
       ...config,
       stations: config.stations.map(String),
     };
@@ -362,16 +377,59 @@ class TidesPlusCard extends _TidesBase {
 
   setConfig(config) {
     this._destroyApex();
+    this._dayOffset = 0;
     super.setConfig(config);
   }
 
   getCardSize() { return 4; }
+
+  _computeWindow() {
+    const cfg = this._config;
+    let anchorMs;
+    if (cfg.anchor === "now") {
+      anchorMs = Date.now();
+    } else {
+      const mid = localMidnight();
+      anchorMs = mid.getTime() + this._dayOffset * 86400000;
+    }
+    return {
+      tMin: anchorMs - Number(cfg.hours_before || 0) * 3600000,
+      tMax: anchorMs + Number(cfg.hours_after || 24) * 3600000,
+    };
+  }
+
+  _shiftDay(delta) {
+    if (this._config.anchor !== "day") return;
+    if (delta === 0) this._dayOffset = 0;
+    else this._dayOffset += delta;
+    // Force full rebuild so the apex axis + annotations refresh.
+    this._destroyApex();
+    this._render();
+  }
 
   _render() {
     if (!this._config) return;
     const ctx = this._prepare();
     if (!ctx) {
       this.shadowRoot.innerHTML = shell(`<div style="padding:16px;">Loading tide data…</div>`);
+      this._renderer = null;
+      this._destroyApex();
+      return;
+    }
+
+    if (!ctx.hasSamplesInWindow) {
+      const canReset = this._config.anchor === "day" && this._dayOffset !== 0;
+      this.shadowRoot.innerHTML = shell(`
+        ${this._navHeader(ctx, this._config.renderer === "apex" ? "ApexCharts" : "native SVG")}
+        <div style="padding:24px 16px; text-align:center;">
+          <div style="opacity:.7;">No cached tide predictions for this range.</div>
+          <div style="opacity:.5; font-size:12px; margin-top:4px;">
+            Coordinator caches ±7 days. Try navigating closer to today.
+          </div>
+          ${canReset ? `<button class="tp-nav" data-nav="today" style="margin-top:12px;${NAV_BTN_STYLE}">Back to today</button>` : ""}
+        </div>
+      `);
+      this._attachNavHandlers();
       this._renderer = null;
       this._destroyApex();
       return;
@@ -387,6 +445,63 @@ class TidesPlusCard extends _TidesBase {
     } else {
       this._renderNative(ctx);
     }
+    this._attachNavHandlers();
+  }
+
+  _navHeader(ctx, rendererLabel) {
+    const inDayMode = this._config.anchor === "day";
+    const inNowMode = this._config.anchor === "now";
+    const label = this._windowLabel(ctx);
+    const nav = inDayMode
+      ? `<span style="display:inline-flex;align-items:center;gap:2px;margin-left:8px;">
+           <button class="tp-nav" data-nav="prev" title="Previous day" style="${NAV_BTN_STYLE}">‹</button>
+           ${this._dayOffset !== 0 ? `<button class="tp-nav" data-nav="today" title="Today" style="${NAV_BTN_STYLE}">Today</button>` : ""}
+           <button class="tp-nav" data-nav="next" title="Next day" style="${NAV_BTN_STYLE}">›</button>
+         </span>`
+      : "";
+    const mode = inNowMode ? " (rolling)" : "";
+    return `<div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85; display:flex; justify-content:space-between; align-items:center;">
+      <span style="display:inline-flex;align-items:center;">
+        <span>${label}${mode}</span>
+        ${nav}
+      </span>
+      <span style="font-size:11px; opacity:.6;">${rendererLabel}</span>
+    </div>`;
+  }
+
+  _windowLabel(ctx) {
+    const hass = this._hass;
+    const startD = new Date(ctx.tMin);
+    const endD = new Date(ctx.tMax);
+    const spanMs = ctx.tMax - ctx.tMin;
+    const startIsMidnight = startD.getHours() === 0 && startD.getMinutes() === 0;
+    // Whole-day at local midnight, span multiple of 24h → date-only label.
+    if (startIsMidnight && Math.abs(spanMs % 86400000) < 1000) {
+      const days = Math.round(spanMs / 86400000);
+      if (days === 1) {
+        return startD.toLocaleDateString(
+          hass && hass.locale && hass.locale.language,
+          { weekday: "long", month: "long", day: "numeric" },
+        );
+      }
+      const endDisplay = new Date(ctx.tMax - 86400000);   // inclusive of last day
+      const fmt = { month: "short", day: "numeric" };
+      return `${startD.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)} → ${endDisplay.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)}`;
+    }
+    // Otherwise show full range with times.
+    const fmt = { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+    return `${startD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)} → ${endD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)}`;
+  }
+
+  _attachNavHandlers() {
+    this.shadowRoot.querySelectorAll("button.tp-nav").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const nav = btn.dataset.nav;
+        if (nav === "prev") this._shiftDay(-1);
+        else if (nav === "next") this._shiftDay(1);
+        else if (nav === "today") this._shiftDay(0);
+      });
+    });
   }
 
   _legendHtml(ctx) {
@@ -450,7 +565,7 @@ class TidesPlusCard extends _TidesBase {
   _renderNative(ctx) {
     const svg = this._buildSvg(ctx);
     this.shadowRoot.innerHTML = shell(`
-      ${headerHtml(ctx, "native SVG")}
+      ${this._navHeader(ctx, "native SVG")}
       <div style="padding: 0 8px; position: relative;" id="tides-chart-wrap">
         ${svg}
       </div>
@@ -485,14 +600,32 @@ class TidesPlusCard extends _TidesBase {
     }
 
     let grid = "";
-    for (let hour = 0; hour <= 24; hour += 1) {
-      const t = tMin + hour * 3600 * 1000;
+    const spanHours = (tMax - tMin) / 3600000;
+    const gridStep = spanHours <= 24 ? 1 : spanHours <= 48 ? 2 : 4;
+    const labelStep = spanHours <= 24 ? 3 : spanHours <= 48 ? 6 : 12;
+    const alignMs = gridStep * 3600000;
+    // Snap to the first gridStep-hour boundary at or after tMin.
+    const firstGrid = Math.ceil(tMin / alignMs) * alignMs;
+    for (let t = firstGrid; t <= tMax; t += alignMs) {
       const x = xOf(t);
-      const strong = hour % 3 === 0;
-      grid += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y0 + chartH}" stroke="rgba(0,0,0,${strong ? 0.15 : 0.06})" stroke-width="1" />`;
-      if (strong && hour !== 24) {
-        const label = fmtHour(new Date(tMin + hour * 3600 * 1000), hass);
+      const hourInWindow = Math.round((t - firstGrid) / 3600000);
+      const isLabel = hourInWindow % labelStep === 0;
+      grid += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y0 + chartH}" stroke="rgba(0,0,0,${isLabel ? 0.15 : 0.06})" stroke-width="1" />`;
+      if (isLabel) {
+        const label = fmtHour(new Date(t), hass);
         grid += `<text x="${x}" y="${y0 + chartH + 16}" font-size="11" text-anchor="middle" fill="var(--secondary-text-color, #666)">${label}</text>`;
+      }
+    }
+    // Day-boundary markers when the window spans more than one calendar day.
+    if (spanHours > 24) {
+      const dayFmt = { weekday: "short", month: "short", day: "numeric" };
+      let d = localMidnight(new Date(tMin));
+      if (d.getTime() < tMin) d = new Date(d.getTime() + 86400000);
+      while (d.getTime() <= tMax) {
+        const x = xOf(d.getTime());
+        grid += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y0 + chartH}" stroke="rgba(0,0,0,0.30)" stroke-width="1.25" />`;
+        grid += `<text x="${x + 4}" y="${y0 + 12}" font-size="10" fill="var(--secondary-text-color, #666)">${d.toLocaleDateString(hass && hass.locale && hass.locale.language, dayFmt)}</text>`;
+        d = new Date(d.getTime() + 86400000);
       }
     }
 
@@ -616,7 +749,7 @@ class TidesPlusCard extends _TidesBase {
   async _renderApex(ctx) {
     if (!this.shadowRoot.getElementById("tides-apex-wrap")) {
       this.shadowRoot.innerHTML = shell(`
-        ${headerHtml(ctx, "ApexCharts")}
+        ${this._navHeader(ctx, "ApexCharts")}
         <div id="tides-apex-wrap" style="padding: 0 8px;">
           <div id="tides-apex-chart"></div>
         </div>
@@ -625,7 +758,7 @@ class TidesPlusCard extends _TidesBase {
     }
     // Refresh header + legend on every render (they may have new data).
     const headerEl = this.shadowRoot.querySelector("ha-card > div");
-    if (headerEl) headerEl.outerHTML = headerHtml(ctx, "ApexCharts");
+    if (headerEl) headerEl.outerHTML = this._navHeader(ctx, "ApexCharts");
     const slot = this.shadowRoot.getElementById("tides-apex-legend-slot");
     if (slot) slot.outerHTML = `<div id="tides-apex-legend-slot">${this._legendHtml(ctx)}</div>`;
 
@@ -738,6 +871,34 @@ class TidesPlusCard extends _TidesBase {
           style: { color: "#fff", background: NOW_STROKE, fontSize: "10px", fontWeight: 600 },
         },
       });
+    }
+
+    // Day-boundary markers when the visible window spans more than one day.
+    const spanHours = (tMax - tMin) / 3600000;
+    if (spanHours > 24) {
+      const dayFmt = { weekday: "short", day: "numeric" };
+      let d = localMidnight(new Date(tMin));
+      if (d.getTime() < tMin) d = new Date(d.getTime() + 86400000);
+      while (d.getTime() <= tMax) {
+        xAnnotations.push({
+          x: d.getTime(),
+          strokeDashArray: 4,
+          borderColor: "rgba(0,0,0,0.25)",
+          label: {
+            text: d.toLocaleDateString(hass && hass.locale && hass.locale.language, dayFmt),
+            orientation: "horizontal",
+            position: "top",
+            offsetY: 0,
+            borderColor: "transparent",
+            style: {
+              color: "var(--secondary-text-color, #666)",
+              background: "transparent",
+              fontSize: "10px",
+            },
+          },
+        });
+        d = new Date(d.getTime() + 86400000);
+      }
     }
 
     const self = this;

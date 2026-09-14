@@ -16,10 +16,12 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 REFRESH_INTERVAL = timedelta(hours=12)
-# 48 h back covers "local midnight yesterday" for any HA timezone regardless
-# of when the last coordinator refresh landed within its 12 h cadence.
-LOOKBACK_HOURS = 48
-FETCH_HOURS = LOOKBACK_HOURS + 7 * 24
+# ±7 days lets the chart card page back or forward a week entirely from
+# cache (no extra API call). NOAA CO-OPS accepts up to 31 days per fetch,
+# so 14 days total is comfortably within limits.
+LOOKBACK_HOURS = 24 * 7
+LOOKAHEAD_HOURS = 24 * 7
+FETCH_HOURS = LOOKBACK_HOURS + LOOKAHEAD_HOURS
 
 
 type NoaaTidesEntry = ConfigEntry[NoaaTidesCoordinator]

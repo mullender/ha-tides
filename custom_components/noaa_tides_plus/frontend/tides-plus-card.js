@@ -438,8 +438,8 @@ class TidesPlusCard extends _TidesBase {
              ${eventIcon(k.type, null)}`
           : `<span style="opacity:.4;">—</span>`;
       el.innerHTML = `
-        <span style="font-variant-numeric:tabular-nums;"><strong>${y.toFixed(1)} ${u}</strong></span>
-        <span style="opacity:.75;margin-left:4px;">${timeStamp}</span>
+        <span style="opacity:.75;">${timeStamp}</span>
+        <strong style="font-variant-numeric:tabular-nums;margin-left:4px;">${y.toFixed(1)} ${u}</strong>
         <span style="margin-left:14px;opacity:.6;">prev</span> ${knotLabel(prev)}
         <span style="margin-left:14px;opacity:.6;">next</span> ${knotLabel(next)}`;
     }

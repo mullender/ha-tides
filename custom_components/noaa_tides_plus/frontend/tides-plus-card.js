@@ -215,7 +215,7 @@ class TidesPlusCard extends HTMLElement {
     }
     this._config = {
       sun_entity: "sun.sun",
-      renderer: "native",
+      renderer: "apex",
       ...config,
       stations: config.stations.map(String),
     };
@@ -384,15 +384,44 @@ class TidesPlusCard extends HTMLElement {
   }
 
   _legendHtml(ctx) {
-    const legend = ctx.perStation
-      .map((s) =>
-        `<span style="display:inline-flex;align-items:center;margin-right:12px;">
-           <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:6px;"></span>
-           ${s.label}${s.currentY != null ? " · " + s.currentY.toFixed(2) + " " + unitLabel(ctx.unit) : ""}
-         </span>`,
-      )
-      .join("");
-    return `<div style="padding: 4px 16px 12px; font-size: 12px;">${legend}</div>`;
+    const hass = ctx.hass;
+    const u = unitLabel(ctx.unit);
+    const blocks = ctx.perStation.map((s) => {
+      const highs = s.knots.filter((k) => k.type === "H").sort((a, b) => a.t - b.t);
+      const lows = s.knots.filter((k) => k.type === "L").sort((a, b) => a.t - b.t);
+      const allY = s.knots.map((k) => k.y);
+      const maxSwing =
+        allY.length >= 2 ? Math.max(...allY) - Math.min(...allY) : null;
+      const rowFor = (arr) =>
+        arr.length
+          ? arr.map(
+              (k) =>
+                `<span style="display:inline-block;margin-right:14px;">
+                   <span style="font-variant-numeric:tabular-nums;opacity:.7;">${fmtTimeShort(new Date(k.t), hass)}</span>
+                   <strong style="margin-left:4px;">${k.y.toFixed(1)} ${u}</strong>
+                 </span>`,
+            ).join("")
+          : `<span style="opacity:.5;">—</span>`;
+      const currentTxt =
+        s.currentY != null
+          ? ` · <strong>${s.currentY.toFixed(2)} ${u}</strong> now`
+          : "";
+      return `
+        <div style="padding:8px 16px;border-top:1px solid rgba(0,0,0,0.06);">
+          <div style="display:flex;align-items:center;font-size:13px;margin-bottom:4px;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;"></span>
+            <span><strong>${s.label}</strong>${currentTxt}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:64px 1fr;gap:4px 8px;font-size:12px;">
+            <span style="opacity:.6;">Highs</span><div>${rowFor(highs)}</div>
+            <span style="opacity:.6;">Lows</span><div>${rowFor(lows)}</div>
+            ${maxSwing != null
+              ? `<span style="opacity:.6;">Swing</span><div><strong>${maxSwing.toFixed(1)} ${u}</strong></div>`
+              : ""}
+          </div>
+        </div>`;
+    }).join("");
+    return `<div style="padding: 0 0 8px;">${blocks}</div>`;
   }
 
 

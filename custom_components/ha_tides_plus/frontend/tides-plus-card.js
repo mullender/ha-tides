@@ -337,19 +337,28 @@ class _TidesBase extends HTMLElement {
   }
 
   _attachNavHandlers() {
-    this.shadowRoot.querySelectorAll("button.tp-nav").forEach((btn) => {
-      if (btn.disabled) return;
-      btn.addEventListener("click", () => {
+    // No-op: nav clicks are delegated on the shadowRoot in connectedCallback.
+    // Kept as a stub so subclasses that call it after a re-render don't need
+    // to change.
+  }
+
+  connectedCallback() {
+    this._tickTimer = window.setInterval(() => this._render(), 60_000);
+    // Event delegation for nav buttons: attached to shadowRoot once so
+    // re-renders can't stack duplicate handlers on the same DOM node.
+    if (!this._navBound) {
+      this._navBound = true;
+      this.shadowRoot.addEventListener("click", (e) => {
+        const btn = e.composedPath().find(
+          (n) => n.nodeType === 1 && n.classList && n.classList.contains("tp-nav"),
+        );
+        if (!btn || btn.disabled) return;
         const nav = btn.dataset.nav;
         if (nav === "prev") this._shift(-1);
         else if (nav === "next") this._shift(1);
         else if (nav === "reset") this._shift(0);
       });
-    });
-  }
-
-  connectedCallback() {
-    this._tickTimer = window.setInterval(() => this._render(), 60_000);
+    }
   }
 
   disconnectedCallback() {
@@ -960,8 +969,13 @@ function chronologicalTable(station, ctx, unit, hass) {
 
 // ---------- registration ----------
 
-customElements.define(CARD_TAG, TidesPlusCard);
-customElements.define(SUMMARY_TAG, TidesPlusSummaryCard);
+// Defensive define: HA can end up importing the module more than once
+// (auto-injected extra_module_url plus a manual dev import, or a second
+// registration on hot reload). Skip re-registering to avoid a
+// "already been used" DOMException, which otherwise turns every card on
+// the page into a "Configuration error".
+if (!customElements.get(CARD_TAG)) customElements.define(CARD_TAG, TidesPlusCard);
+if (!customElements.get(SUMMARY_TAG)) customElements.define(SUMMARY_TAG, TidesPlusSummaryCard);
 
 window.customCards = window.customCards || [];
 for (const [tag, name, desc] of [

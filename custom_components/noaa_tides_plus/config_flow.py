@@ -160,7 +160,7 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
             if station.state
             else station.name
         )
-        return f"{base} ({station.id}) — {dist_km:.1f} km"
+        return f"{base} — {dist_km:.1f} km (station: {station.id})"
 
 
 class _StepError(Exception):

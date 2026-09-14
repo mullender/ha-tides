@@ -121,6 +121,15 @@ function preferredUnit(hass, override) {
 const unitLabel = (unit) => (unit === "metric" ? "m" : "ft");
 const convertHeight = (m, unit) => (unit === "metric" ? m : m * M_TO_FT);
 
+function darkenHex(hex, amount) {
+  const m = String(hex || "").replace("#", "").match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return hex;
+  const parts = [m[1], m[2], m[3]].map((h) =>
+    Math.max(0, Math.round(parseInt(h, 16) * (1 - amount))),
+  );
+  return "#" + parts.map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
 function localMidnight(now = new Date()) {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
 }
@@ -603,13 +612,13 @@ class TidesPlusCard extends _TidesBase {
         : "now";
       const knotLabel = (k) =>
         k
-          ? `<span style="opacity:.7;">${fmtTimeShort(new Date(k.t), this._hass)}</span>
-             <strong style="font-variant-numeric:tabular-nums;">${k.y.toFixed(1)} ${u}</strong>
+          ? `<strong style="font-variant-numeric:tabular-nums;">${k.y.toFixed(1)} ${u}</strong>
+             <span style="opacity:.7;margin-left:4px;">${fmtTimeShort(new Date(k.t), this._hass)}</span>
              ${eventIcon(k.type, null)}`
           : `<span style="opacity:.4;">—</span>`;
       el.innerHTML = `
-        <span style="opacity:.75;">${timeStamp}</span>
-        <strong style="font-variant-numeric:tabular-nums;margin-left:4px;">${y.toFixed(1)} ${u}</strong>
+        <strong style="font-variant-numeric:tabular-nums;">${y.toFixed(1)} ${u}</strong>
+        <span style="opacity:.75;margin-left:4px;">${timeStamp}</span>
         <span style="margin-left:14px;opacity:.6;">prev</span> ${knotLabel(prev)}
         <span style="margin-left:14px;opacity:.6;">next</span> ${knotLabel(next)}`;
     }
@@ -703,15 +712,15 @@ class TidesPlusCard extends _TidesBase {
           seriesIndex: 0,
           marker: { size: 0, fillColor: "transparent", strokeColor: "transparent" },
           label: {
-            text: `${fmtTimeShort(new Date(k.t), hass)} · ${k.y.toFixed(1)} ${unitLabel(unit)}`,
+            text: `${k.y.toFixed(1)} ${unitLabel(unit)} · ${fmtTimeShort(new Date(k.t), hass)}`,
             offsetY: k.type === "H" ? -8 : 22,
             borderWidth: 0,
             borderColor: "transparent",
             style: {
               background: "transparent",
-              color: st.color,
+              color: darkenHex(st.color, 0.4),
               fontSize: "10px",
-              fontWeight: 600,
+              fontWeight: 700,
               padding: { top: 0, bottom: 0, left: 2, right: 2 },
             },
           },
@@ -789,10 +798,11 @@ class TidesPlusCard extends _TidesBase {
       // Solid water fill under the curve — reaches all the way down to the
       // axis so the shading reads as a filled body of water rather than a
       // fading gradient. Keeps the per-station colour for multi-station
-      // distinguishability.
+      // distinguishability. Kept light so the label text on top stays
+      // readable without needing an outline.
       fill: {
         type: "solid",
-        opacity: 0.5,
+        opacity: 0.3,
       },
       // By default apex fills area series down to y=0; when the y-axis
       // extends below zero (heightMin < 0 after padding) this leaves a
@@ -949,9 +959,9 @@ function chronologicalTable(station, ctx, unit, hass) {
       ? `<span style="font-weight:600;">now</span>`
       : fmtTimeShort(new Date(e.t), hass);
     return `<tr style="${highlight}">
-      <td style="padding:3px 12px 3px 0;font-variant-numeric:tabular-nums;color:var(--secondary-text-color,#666);text-align:left;white-space:nowrap;">${timeLabel}</td>
-      <td style="padding:3px 8px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;">${e.y.toFixed(1)} ${unit}</td>
-      <td style="padding:3px 0 3px 4px;text-align:left;line-height:0;">${eventIcon(e.kind, e.rising)}</td>
+      <td style="padding:3px 8px 3px 0;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;"><strong>${e.y.toFixed(1)} ${unit}</strong></td>
+      <td style="padding:3px 12px 3px 4px;font-variant-numeric:tabular-nums;color:var(--secondary-text-color,#666);text-align:left;white-space:nowrap;">${timeLabel}</td>
+      <td style="padding:3px 0;text-align:left;line-height:0;">${eventIcon(e.kind, e.rising)}</td>
     </tr>`;
   }).join("");
 

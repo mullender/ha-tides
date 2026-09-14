@@ -15,6 +15,9 @@ APPLICATION = "noaa_tides_plus"
 MDAPI_STATION_URL = (
     "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/{station_id}.json"
 )
+MDAPI_STATIONS_URL = (
+    "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json"
+)
 DATAGETTER_URL = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
 
 
@@ -49,6 +52,39 @@ class TideExtremum:
     time: datetime
     height: float
     type: Literal["H", "L"]
+
+
+async def list_tide_stations(session: ClientSession) -> list[Station]:
+    """Fetch NOAA's full list of tide-prediction stations (~3500 entries).
+
+    Response is ~700 KB; callers should cache it for the duration of a
+    config-flow session and not refetch per keystroke.
+    """
+    try:
+        async with session.get(
+            MDAPI_STATIONS_URL, params={"type": "tidepredictions"}
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+    except ClientError as err:
+        raise ApiError(f"network error: {err}") from err
+
+    stations: list[Station] = []
+    for s in payload.get("stations") or []:
+        try:
+            stations.append(
+                Station(
+                    id=str(s["id"]),
+                    name=s.get("name") or str(s["id"]),
+                    lat=float(s["lat"]),
+                    lng=float(s["lng"]),
+                    state=s.get("state") or None,
+                    tide_type=s.get("tideType") or None,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return stations
 
 
 async def get_station(session: ClientSession, station_id: str) -> Station:

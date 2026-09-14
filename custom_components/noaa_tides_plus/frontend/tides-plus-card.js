@@ -38,18 +38,17 @@ const STATION_COLORS = [
 ];
 
 const NIGHT_FILL = "rgba(120, 144, 156, 0.18)";
-const AREA_OPACITY = 0.18;
 const NOW_STROKE = "rgba(198, 40, 40, 0.85)";
 
-const PADDING = { top: 16, right: 20, bottom: 30, left: 44 };
-const VIEW = { w: 800, h: 240 };
 
 const APEX_URL = "/noaa_tides_plus/apexcharts.min.js";
 
 const NAV_BTN_STYLE =
   "background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,0.12));" +
   "color:var(--primary-text-color,inherit);border-radius:4px;padding:2px 8px;" +
-  "cursor:pointer;font-size:13px;line-height:1;";
+  "cursor:pointer;font-size:13px;line-height:1;min-width:28px;";
+const NAV_BTN_DISABLED =
+  "opacity:.35;cursor:default;";
 
 
 // ---------- PCHIP (mirrors interpolation.py) ----------
@@ -127,6 +126,8 @@ function localMidnight(now = new Date()) {
 }
 
 function daySunTimes(hass, sunEntityId) {
+  // Kept for legacy — returns today's sunrise/sunset. Newer callers use
+  // sunNightRects() for arbitrary windows.
   const midnight = localMidnight();
   const tomorrow = new Date(midnight.getTime() + 86400000);
   const sun = hass && hass.states && hass.states[sunEntityId];
@@ -142,13 +143,64 @@ function daySunTimes(hass, sunEntityId) {
   return { sunrise: project(rising), sunset: project(setting) };
 }
 
-function fmtHour(d, hass) {
-  try {
-    return d.toLocaleTimeString(hass && hass.locale && hass.locale.language, {
-      hour: "numeric",
-      hour12: !(hass && hass.locale && hass.locale.time_format === "24"),
-    });
-  } catch (_) { return d.getHours() + ":00"; }
+function sunNightRects(hass, sunEntityId, tMin, tMax) {
+  // Returns [{start, end}] pairs covering the "night" (below-horizon)
+  // portions of [tMin, tMax]. Uses sun.sun's next_rising/next_setting as
+  // a reference and projects them forward/backward by whole days for
+  // other visible days — sunrise drifts ~1 min/day so a ±7 d projection
+  // is off by only a handful of minutes, invisible in the chart.
+  const sun = hass && hass.states && hass.states[sunEntityId];
+  if (!sun) return [];
+  const rising0 = sun.attributes.next_rising ? new Date(sun.attributes.next_rising).getTime() : null;
+  const setting0 = sun.attributes.next_setting ? new Date(sun.attributes.next_setting).getTime() : null;
+  if (rising0 == null && setting0 == null) return [];
+
+  const DAY = 86400000;
+
+  // Build a sorted list of sunrise/sunset events that cover [tMin - 1d, tMax + 1d]
+  // so bracketing rects at the edges close properly.
+  const startEdge = tMin - DAY;
+  const endEdge = tMax + DAY;
+  const events = [];
+  const seed = (t0, kind) => {
+    if (t0 == null) return;
+    // Anchor onto the first occurrence within (startEdge, startEdge + DAY]
+    let t = t0;
+    while (t > startEdge + DAY) t -= DAY;
+    while (t <= startEdge) t += DAY;
+    while (t <= endEdge) {
+      events.push({ t, kind });
+      t += DAY;
+    }
+  };
+  seed(rising0, "rise");
+  seed(setting0, "set");
+  events.sort((a, b) => a.t - b.t);
+
+  // Walk events and emit night rects: from a set → the following rise.
+  const rects = [];
+  // Determine initial state at tMin: are we before the first event's kind?
+  // The first event's kind tells us what came before it.
+  //   first event = rise  -> we were below horizon → night from tMin
+  //   first event = set   -> we were above horizon → no leading night
+  let openNight = null;
+  if (events.length && events[0].kind === "rise") {
+    openNight = tMin;
+  }
+  for (const e of events) {
+    if (e.kind === "set") {
+      openNight = e.t;
+    } else if (e.kind === "rise") {
+      if (openNight != null) {
+        rects.push({ start: Math.max(openNight, tMin), end: Math.min(e.t, tMax) });
+        openNight = null;
+      }
+    }
+  }
+  if (openNight != null) {
+    rects.push({ start: Math.max(openNight, tMin), end: tMax });
+  }
+  return rects.filter((r) => r.end > r.start);
 }
 
 function fmtTimeShort(d, hass) {
@@ -161,17 +213,6 @@ function fmtTimeShort(d, hass) {
   } catch (_) {
     return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0");
   }
-}
-
-function niceStep(rough) {
-  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
-  const norm = rough / pow;
-  let mult;
-  if (norm < 1.5) mult = 1;
-  else if (norm < 3) mult = 2;
-  else if (norm < 7) mult = 5;
-  else mult = 10;
-  return mult * pow;
 }
 
 
@@ -339,7 +380,7 @@ class _TidesBase extends HTMLElement {
     return {
       hass, unit, perStation, tMin, tMax, heightMin, heightMax,
       hasSamplesInWindow,
-      sunTimes: daySunTimes(hass, this._config.sun_entity),
+      nightRects: sunNightRects(hass, this._config.sun_entity, tMin, tMax),
       now: Date.now(),
     };
   }
@@ -354,8 +395,7 @@ class TidesPlusCard extends _TidesBase {
     this._perStation = [];
     this._chartCtx = null;
     this._apexChart = null;
-    this._renderer = null;
-    this._dayOffset = 0;   // integer days from today, only meaningful in anchor=day
+    this._windowOffset = 0;   // ms shift from the "current" anchor
   }
 
   disconnectedCallback() {
@@ -366,10 +406,10 @@ class TidesPlusCard extends _TidesBase {
   _defaultConfig(config) {
     return {
       sun_entity: "sun.sun",
-      renderer: "apex",
       anchor: "day",
       hours_before: 0,
       hours_after: 24,
+      buttons: "forward-backward",
       ...config,
       stations: config.stations.map(String),
     };
@@ -377,20 +417,28 @@ class TidesPlusCard extends _TidesBase {
 
   setConfig(config) {
     this._destroyApex();
-    this._dayOffset = 0;
+    this._windowOffset = 0;
     super.setConfig(config);
   }
 
   getCardSize() { return 4; }
 
+  _stepMs() {
+    // How far one prev/next click shifts the anchor.
+    const cfg = this._config;
+    if (cfg.anchor === "day") return 86400000;
+    return (Number(cfg.hours_before || 0) + Number(cfg.hours_after || 0)) * 3600000
+      || 86400000;
+  }
+
   _computeWindow() {
     const cfg = this._config;
     let anchorMs;
     if (cfg.anchor === "now") {
-      anchorMs = Date.now();
+      anchorMs = Date.now() + this._windowOffset;
     } else {
       const mid = localMidnight();
-      anchorMs = mid.getTime() + this._dayOffset * 86400000;
+      anchorMs = mid.getTime() + this._windowOffset;
     }
     return {
       tMin: anchorMs - Number(cfg.hours_before || 0) * 3600000,
@@ -398,11 +446,13 @@ class TidesPlusCard extends _TidesBase {
     };
   }
 
-  _shiftDay(delta) {
-    if (this._config.anchor !== "day") return;
-    if (delta === 0) this._dayOffset = 0;
-    else this._dayOffset += delta;
-    // Force full rebuild so the apex axis + annotations refresh.
+  _shift(direction) {
+    // direction: -1 = prev, +1 = next, 0 = reset
+    if (direction === 0) {
+      this._windowOffset = 0;
+    } else {
+      this._windowOffset += direction * this._stepMs();
+    }
     this._destroyApex();
     this._render();
   }
@@ -418,54 +468,49 @@ class TidesPlusCard extends _TidesBase {
     }
 
     if (!ctx.hasSamplesInWindow) {
-      const canReset = this._config.anchor === "day" && this._dayOffset !== 0;
+      const canReset = this._windowOffset !== 0;
       this.shadowRoot.innerHTML = shell(`
-        ${this._navHeader(ctx, this._config.renderer === "apex" ? "ApexCharts" : "native SVG")}
+        ${this._navHeader(ctx)}
         <div style="padding:24px 16px; text-align:center;">
           <div style="opacity:.7;">No cached tide predictions for this range.</div>
           <div style="opacity:.5; font-size:12px; margin-top:4px;">
             Coordinator caches ±7 days. Try navigating closer to today.
           </div>
-          ${canReset ? `<button class="tp-nav" data-nav="today" style="margin-top:12px;${NAV_BTN_STYLE}">Back to today</button>` : ""}
+          ${canReset ? `<button class="tp-nav" data-nav="reset" style="margin-top:12px;${NAV_BTN_STYLE}">Back to ${this._config.anchor === "now" ? "now" : "today"}</button>` : ""}
         </div>
       `);
       this._attachNavHandlers();
-      this._renderer = null;
       this._destroyApex();
       return;
     }
 
-    const rendererChanged = this._renderer !== this._config.renderer;
-    if (rendererChanged && this._renderer === "apex") this._destroyApex();
-    this._renderer = this._config.renderer;
     this._perStation = ctx.perStation;
-
-    if (this._config.renderer === "apex") {
-      this._renderApex(ctx);
-    } else {
-      this._renderNative(ctx);
-    }
+    this._renderApex(ctx);
     this._attachNavHandlers();
   }
 
-  _navHeader(ctx, rendererLabel) {
-    const inDayMode = this._config.anchor === "day";
-    const inNowMode = this._config.anchor === "now";
+  _navHeader(ctx) {
     const label = this._windowLabel(ctx);
-    const nav = inDayMode
-      ? `<span style="display:inline-flex;align-items:center;gap:2px;margin-left:8px;">
-           <button class="tp-nav" data-nav="prev" title="Previous day" style="${NAV_BTN_STYLE}">‹</button>
-           ${this._dayOffset !== 0 ? `<button class="tp-nav" data-nav="today" title="Today" style="${NAV_BTN_STYLE}">Today</button>` : ""}
-           <button class="tp-nav" data-nav="next" title="Next day" style="${NAV_BTN_STYLE}">›</button>
+    const cfg = this._config;
+    const showNav = cfg.buttons !== "none";
+    const resetLabel = cfg.anchor === "now" ? "Now" : "Today";
+    const atRest = this._windowOffset === 0;
+    const stepLabel = cfg.anchor === "day" ? "day" : "window";
+
+    const nav = showNav
+      ? `<span style="display:inline-flex;align-items:center;gap:4px;">
+           <button class="tp-nav" data-nav="reset" title="Back to ${resetLabel.toLowerCase()}"
+                   ${atRest ? "disabled" : ""}
+                   style="${NAV_BTN_STYLE}${atRest ? NAV_BTN_DISABLED : ""}">${resetLabel}</button>
+           <button class="tp-nav" data-nav="prev" title="Previous ${stepLabel}"
+                   style="${NAV_BTN_STYLE}">‹</button>
+           <button class="tp-nav" data-nav="next" title="Next ${stepLabel}"
+                   style="${NAV_BTN_STYLE}">›</button>
          </span>`
       : "";
-    const mode = inNowMode ? " (rolling)" : "";
-    return `<div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85; display:flex; justify-content:space-between; align-items:center;">
-      <span style="display:inline-flex;align-items:center;">
-        <span>${label}${mode}</span>
-        ${nav}
-      </span>
-      <span style="font-size:11px; opacity:.6;">${rendererLabel}</span>
+    return `<div style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+      <span>${label}</span>
+      ${nav}
     </div>`;
   }
 
@@ -495,11 +540,12 @@ class TidesPlusCard extends _TidesBase {
 
   _attachNavHandlers() {
     this.shadowRoot.querySelectorAll("button.tp-nav").forEach((btn) => {
+      if (btn.disabled) return;
       btn.addEventListener("click", () => {
         const nav = btn.dataset.nav;
-        if (nav === "prev") this._shiftDay(-1);
-        else if (nav === "next") this._shiftDay(1);
-        else if (nav === "today") this._shiftDay(0);
+        if (nav === "prev") this._shift(-1);
+        else if (nav === "next") this._shift(1);
+        else if (nav === "reset") this._shift(0);
       });
     });
   }
@@ -560,196 +606,12 @@ class TidesPlusCard extends _TidesBase {
     }
   }
 
-  // Native SVG renderer ---------------------------------------------------
-
-  _renderNative(ctx) {
-    const svg = this._buildSvg(ctx);
-    this.shadowRoot.innerHTML = shell(`
-      ${this._navHeader(ctx, "native SVG")}
-      <div style="padding: 0 8px; position: relative;" id="tides-chart-wrap">
-        ${svg}
-      </div>
-      ${this._legendHtml(ctx)}
-    `);
-    this._attachNativeInteractivity();
-    this._updateLegend(null);
-  }
-
-  _buildSvg(ctx) {
-    const { hass, unit, perStation, tMin, tMax, heightMin, heightMax, sunTimes, now } = ctx;
-    const W = VIEW.w;
-    const H = VIEW.h;
-    const chartW = W - PADDING.left - PADDING.right;
-    const chartH = H - PADDING.top - PADDING.bottom;
-    const x0 = PADDING.left;
-    const y0 = PADDING.top;
-
-    this._chartCtx = { tMin, tMax, x0, y0, chartW, chartH, heightMin, heightMax, unit };
-
-    const xOf = (t) => x0 + ((t - tMin) / (tMax - tMin)) * chartW;
-    const yOf = (h) => y0 + (1 - (h - heightMin) / (heightMax - heightMin)) * chartH;
-
-    let nightRects = "";
-    if (sunTimes.sunrise) {
-      const sx = xOf(sunTimes.sunrise.getTime());
-      nightRects += `<rect x="${x0}" y="${y0}" width="${Math.max(0, sx - x0)}" height="${chartH}" fill="${NIGHT_FILL}" />`;
-    }
-    if (sunTimes.sunset) {
-      const sx = xOf(sunTimes.sunset.getTime());
-      nightRects += `<rect x="${sx}" y="${y0}" width="${Math.max(0, x0 + chartW - sx)}" height="${chartH}" fill="${NIGHT_FILL}" />`;
-    }
-
-    let grid = "";
-    const spanHours = (tMax - tMin) / 3600000;
-    const gridStep = spanHours <= 24 ? 1 : spanHours <= 48 ? 2 : 4;
-    const labelStep = spanHours <= 24 ? 3 : spanHours <= 48 ? 6 : 12;
-    const alignMs = gridStep * 3600000;
-    // Snap to the first gridStep-hour boundary at or after tMin.
-    const firstGrid = Math.ceil(tMin / alignMs) * alignMs;
-    for (let t = firstGrid; t <= tMax; t += alignMs) {
-      const x = xOf(t);
-      const hourInWindow = Math.round((t - firstGrid) / 3600000);
-      const isLabel = hourInWindow % labelStep === 0;
-      grid += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y0 + chartH}" stroke="rgba(0,0,0,${isLabel ? 0.15 : 0.06})" stroke-width="1" />`;
-      if (isLabel) {
-        const label = fmtHour(new Date(t), hass);
-        grid += `<text x="${x}" y="${y0 + chartH + 16}" font-size="11" text-anchor="middle" fill="var(--secondary-text-color, #666)">${label}</text>`;
-      }
-    }
-    // Day-boundary markers when the window spans more than one calendar day.
-    if (spanHours > 24) {
-      const dayFmt = { weekday: "short", month: "short", day: "numeric" };
-      let d = localMidnight(new Date(tMin));
-      if (d.getTime() < tMin) d = new Date(d.getTime() + 86400000);
-      while (d.getTime() <= tMax) {
-        const x = xOf(d.getTime());
-        grid += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y0 + chartH}" stroke="rgba(0,0,0,0.30)" stroke-width="1.25" />`;
-        grid += `<text x="${x + 4}" y="${y0 + 12}" font-size="10" fill="var(--secondary-text-color, #666)">${d.toLocaleDateString(hass && hass.locale && hass.locale.language, dayFmt)}</text>`;
-        d = new Date(d.getTime() + 86400000);
-      }
-    }
-
-    let yTicks = "";
-    const step = niceStep((heightMax - heightMin) / 4);
-    const first = Math.ceil(heightMin / step) * step;
-    for (let h = first; h <= heightMax; h += step) {
-      const y = yOf(h);
-      yTicks += `<line x1="${x0}" y1="${y}" x2="${x0 + chartW}" y2="${y}" stroke="rgba(0,0,0,0.06)" stroke-width="1" />`;
-      yTicks += `<text x="${x0 - 6}" y="${y + 3}" font-size="11" text-anchor="end" fill="var(--secondary-text-color, #666)">${h.toFixed(step < 1 ? 1 : 0)} ${unitLabel(unit)}</text>`;
-    }
-
-    let stationsSvg = "";
-    let labelsSvg = "";
-    for (const st of perStation) {
-      if (!st.samples.length) continue;
-      const pathD =
-        "M " +
-        st.samples.map(([t, y]) => `${xOf(t).toFixed(2)} ${yOf(y).toFixed(2)}`).join(" L ");
-      const areaD =
-        pathD +
-        ` L ${xOf(st.samples[st.samples.length - 1][0]).toFixed(2)} ${(y0 + chartH).toFixed(2)}` +
-        ` L ${xOf(st.samples[0][0]).toFixed(2)} ${(y0 + chartH).toFixed(2)} Z`;
-      stationsSvg += `<path d="${areaD}" fill="${st.color}" fill-opacity="${AREA_OPACITY}" />`;
-      stationsSvg += `<path d="${pathD}" fill="none" stroke="${st.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />`;
-      for (const k of st.dayKnots) {
-        const cx = xOf(k.t);
-        const cy = yOf(k.y);
-        stationsSvg += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="3.5" fill="${st.color}" />`;
-        // Label above H knots, below L knots. A white stroke around the text
-        // acts as an outline so it stays legible over the shaded area fill.
-        const dy = k.type === "H" ? -10 : 18;
-        const label = `${fmtTimeShort(new Date(k.t), hass)} · ${k.y.toFixed(1)} ${unitLabel(unit)}`;
-        labelsSvg += `<text x="${cx.toFixed(2)}" y="${(cy + dy).toFixed(2)}"
-          font-size="10" font-weight="600" text-anchor="middle"
-          fill="${st.color}"
-          paint-order="stroke fill" stroke="var(--card-background-color, #fff)" stroke-width="3">${label}</text>`;
-      }
-      if (st.currentY != null) {
-        const cx = xOf(now);
-        const cy = yOf(st.currentY);
-        stationsSvg += `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="4.5" fill="#fff" stroke="${st.color}" stroke-width="2" />`;
-      }
-    }
-    stationsSvg += labelsSvg;
-
-    let nowMark = "";
-    if (now >= tMin && now <= tMax) {
-      const nx = xOf(now);
-      nowMark += `<line x1="${nx}" y1="${y0}" x2="${nx}" y2="${y0 + chartH}" stroke="${NOW_STROKE}" stroke-width="1.5" />`;
-      nowMark += `<text x="${nx + 4}" y="${y0 + 12}" font-size="10" fill="${NOW_STROKE}" font-weight="600">NOW</text>`;
-    }
-
-    let cursorLayer = `<g id="tides-cursor" style="display:none; pointer-events:none;">`;
-    cursorLayer += `<line id="tides-crosshair" x1="0" y1="${y0}" x2="0" y2="${y0 + chartH}" stroke="rgba(0,0,0,0.35)" stroke-width="1" stroke-dasharray="3 3" />`;
-    for (const st of perStation) {
-      cursorLayer += `<circle data-station="${st.id}" r="4.5" fill="${st.color}" stroke="#fff" stroke-width="1.5" cx="0" cy="0" />`;
-    }
-    cursorLayer += `</g>`;
-    const hit = `<rect id="tides-hit" x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="transparent" style="cursor: crosshair;" />`;
-
-    return `
-      <svg id="tides-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="240" role="img" aria-label="Tide chart">
-        <rect x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="var(--card-background-color, #fff)" />
-        ${nightRects}
-        ${yTicks}
-        ${grid}
-        ${stationsSvg}
-        ${nowMark}
-        ${cursorLayer}
-        ${hit}
-        <rect x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="1" pointer-events="none" />
-      </svg>`;
-  }
-
-  _attachNativeInteractivity() {
-    const hit = this.shadowRoot.getElementById("tides-hit");
-    if (!hit) return;
-    hit.addEventListener("pointermove", (e) => this._nativeUpdateCursor(e));
-    hit.addEventListener("pointerleave", () => this._nativeHideCursor());
-  }
-
-  _nativeUpdateCursor(evt) {
-    const ctx = this._chartCtx;
-    if (!ctx) return;
-    const svg = this.shadowRoot.getElementById("tides-svg");
-    const cursor = this.shadowRoot.getElementById("tides-cursor");
-    const crosshair = this.shadowRoot.getElementById("tides-crosshair");
-    if (!svg || !cursor || !crosshair) return;
-
-    const pt = svg.createSVGPoint();
-    pt.x = evt.clientX;
-    pt.y = evt.clientY;
-    const svgP = pt.matrixTransform(svg.getScreenCTM().inverse());
-    const xSvg = Math.max(ctx.x0, Math.min(ctx.x0 + ctx.chartW, svgP.x));
-    const t = ctx.tMin + ((xSvg - ctx.x0) / ctx.chartW) * (ctx.tMax - ctx.tMin);
-
-    crosshair.setAttribute("x1", xSvg);
-    crosshair.setAttribute("x2", xSvg);
-    for (const dot of cursor.querySelectorAll("circle[data-station]")) {
-      const st = this._perStation.find((s) => s.id === dot.getAttribute("data-station"));
-      if (!st) { dot.setAttribute("cx", "-100"); continue; }
-      const y = interpolateAt(st.times, st.heights, st.derivs, t);
-      if (y == null) { dot.setAttribute("cx", "-100"); continue; }
-      const ySvg = ctx.y0 + (1 - (y - ctx.heightMin) / (ctx.heightMax - ctx.heightMin)) * ctx.chartH;
-      dot.setAttribute("cx", xSvg);
-      dot.setAttribute("cy", ySvg);
-    }
-    cursor.style.display = "";
-    this._updateLegend(t);
-  }
-
-  _nativeHideCursor() {
-    const cursor = this.shadowRoot.getElementById("tides-cursor");
-    if (cursor) cursor.style.display = "none";
-    this._updateLegend(null);
-  }
-
   // Apex renderer ---------------------------------------------------------
 
   async _renderApex(ctx) {
     if (!this.shadowRoot.getElementById("tides-apex-wrap")) {
       this.shadowRoot.innerHTML = shell(`
-        ${this._navHeader(ctx, "ApexCharts")}
+        ${this._navHeader(ctx)}
         <div id="tides-apex-wrap" style="padding: 0 8px;">
           <div id="tides-apex-chart"></div>
         </div>
@@ -795,7 +657,7 @@ class TidesPlusCard extends _TidesBase {
   }
 
   _buildApexOptions(ctx) {
-    const { unit, perStation, tMin, tMax, heightMin, heightMax, sunTimes, now, hass } = ctx;
+    const { unit, perStation, tMin, tMax, heightMin, heightMax, nightRects: nightRectData, now, hass } = ctx;
 
     this._chartCtx = { tMin, tMax, unit, heightMin, heightMax };
 
@@ -849,15 +711,9 @@ class TidesPlusCard extends _TidesBase {
     });
 
     const xAnnotations = [];
-    if (sunTimes.sunrise) {
+    for (const r of nightRectData || []) {
       xAnnotations.push({
-        x: tMin, x2: sunTimes.sunrise.getTime(),
-        fillColor: NIGHT_FILL, opacity: 1, borderColor: "transparent",
-      });
-    }
-    if (sunTimes.sunset) {
-      xAnnotations.push({
-        x: sunTimes.sunset.getTime(), x2: tMax,
+        x: r.start, x2: r.end,
         fillColor: NIGHT_FILL, opacity: 1, borderColor: "transparent",
       });
     }
@@ -921,9 +777,13 @@ class TidesPlusCard extends _TidesBase {
       series,
       dataLabels: { enabled: false },
       stroke: { curve: "straight", width: 2 },
+      // Solid-ish water fill under the curve. Keeps the station colour so
+      // multi-station charts stay distinguishable, but a stronger opacity
+      // (single stop) gives the "sea level filling in" look rather than the
+      // washed-out gradient the earlier default produced.
       fill: {
         type: "gradient",
-        gradient: { opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 100] },
+        gradient: { opacityFrom: 0.65, opacityTo: 0.35, stops: [0, 100] },
       },
       markers: { size: 0, discrete: discreteMarkers, hover: { size: 6 } },
       xaxis: {
@@ -1023,17 +883,6 @@ class TidesPlusSummaryCard extends _TidesBase {
 
 function shell(inner) {
   return `<ha-card>${inner}</ha-card>`;
-}
-
-function headerHtml(ctx, rendererLabel) {
-  const dateStr = new Date().toLocaleDateString(
-    ctx.hass && ctx.hass.locale && ctx.hass.locale.language,
-    { weekday: "long", month: "long", day: "numeric" },
-  );
-  return `<div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85; display:flex; justify-content:space-between; align-items:center;">
-    <span>${dateStr}</span>
-    <span style="font-size:11px; opacity:.6;">${rendererLabel}</span>
-  </div>`;
 }
 
 function eventIcon(kind, rising) {

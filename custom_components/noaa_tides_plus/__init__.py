@@ -34,6 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _FRONTEND_URL = "/noaa_tides_plus/tides-plus-card.js"
+_APEX_URL = "/noaa_tides_plus/apexcharts.min.js"
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
@@ -46,7 +47,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         [
             StaticPathConfig(
                 _FRONTEND_URL, str(_FRONTEND_DIR / "tides-plus-card.js"), False
-            )
+            ),
+            StaticPathConfig(
+                _APEX_URL, str(_FRONTEND_DIR / "apexcharts.min.js"), True
+            ),
         ]
     )
     add_extra_js_url(hass, _FRONTEND_URL)

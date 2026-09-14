@@ -6,12 +6,14 @@
  *   stations:
  *     - 8467150
  *     - 9445882
- *   sun_entity: sun.sun     # optional, defaults to sun.sun
- *   unit: metric | imperial # optional, defaults to hass length preference
+ *   renderer: native | apex   # optional, default native
+ *   sun_entity: sun.sun       # optional, defaults to sun.sun
+ *   unit: metric | imperial   # optional, defaults to hass length preference
  *
  * Data path: hi/lo knots come from the noaa_tides_plus/hilo_series WebSocket
  * command (metres, UTC). Interpolation is Fritsch-Carlson PCHIP, matching the
- * Python side, so peaks and troughs render with zero slope.
+ * Python side, so peaks and troughs render with zero slope regardless of the
+ * chosen renderer.
  */
 
 const CARD_TAG = "tides-plus-card";
@@ -33,6 +35,8 @@ const NOW_STROKE = "rgba(198, 40, 40, 0.85)";
 
 const PADDING = { top: 16, right: 20, bottom: 30, left: 44 };
 const VIEW = { w: 800, h: 240 };
+
+const APEX_URL = "/noaa_tides_plus/apexcharts.min.js";
 
 
 // ---------- PCHIP (mirrors interpolation.py) ----------
@@ -102,13 +106,8 @@ function preferredUnit(hass, override) {
   return "imperial";
 }
 
-function unitLabel(unit) {
-  return unit === "metric" ? "m" : "ft";
-}
-
-function convertHeight(meters, unit) {
-  return unit === "metric" ? meters : meters * M_TO_FT;
-}
+const unitLabel = (unit) => (unit === "metric" ? "m" : "ft");
+const convertHeight = (m, unit) => (unit === "metric" ? m : m * M_TO_FT);
 
 function localMidnight(now = new Date()) {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
@@ -136,9 +135,7 @@ function fmtHour(d, hass) {
       hour: "numeric",
       hour12: !(hass && hass.locale && hass.locale.time_format === "24"),
     });
-  } catch (_) {
-    return d.getHours() + ":00";
-  }
+  } catch (_) { return d.getHours() + ":00"; }
 }
 
 function fmtTimeShort(d, hass) {
@@ -151,6 +148,34 @@ function fmtTimeShort(d, hass) {
   } catch (_) {
     return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0");
   }
+}
+
+function niceStep(rough) {
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / pow;
+  let mult;
+  if (norm < 1.5) mult = 1;
+  else if (norm < 3) mult = 2;
+  else if (norm < 7) mult = 5;
+  else mult = 10;
+  return mult * pow;
+}
+
+
+// ---------- ApexCharts lazy load ----------
+
+let _apexPromise = null;
+function ensureApexLoaded() {
+  if (window.ApexCharts) return Promise.resolve();
+  if (_apexPromise) return _apexPromise;
+  _apexPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = APEX_URL;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Failed to load ApexCharts"));
+    document.head.appendChild(s);
+  });
+  return _apexPromise;
 }
 
 
@@ -167,7 +192,9 @@ class TidesPlusCard extends HTMLElement {
     this._loaded = false;
     this._tickTimer = null;
     this._perStation = [];
-    this._chartCtx = null;   // {tMin, tMax, x0, y0, chartW, chartH, heightMin, heightMax, unit}
+    this._chartCtx = null;
+    this._apexChart = null;
+    this._renderer = null;
   }
 
   connectedCallback() {
@@ -179,6 +206,7 @@ class TidesPlusCard extends HTMLElement {
       window.clearInterval(this._tickTimer);
       this._tickTimer = null;
     }
+    this._destroyApex();
   }
 
   setConfig(config) {
@@ -187,11 +215,13 @@ class TidesPlusCard extends HTMLElement {
     }
     this._config = {
       sun_entity: "sun.sun",
+      renderer: "native",
       ...config,
       stations: config.stations.map(String),
     };
     this._series = new Map();
     this._loaded = false;
+    this._destroyApex();
     this._render();
   }
 
@@ -232,18 +262,15 @@ class TidesPlusCard extends HTMLElement {
     }
   }
 
-  _render() {
-    if (!this._config) return;
+  _prepare() {
+    // Common data prep for both renderers.
     const hass = this._hass;
     const stations = this._config.stations;
     const unit = preferredUnit(hass, this._config.unit);
-    const anyLoaded = stations.some((id) => this._series.get(id) && !this._series.get(id).error);
-    if (!anyLoaded) {
-      this.shadowRoot.innerHTML = this._shell(
-        `<div style="padding:16px;">Loading tide data…</div>`,
-      );
-      return;
-    }
+    const anyLoaded = stations.some(
+      (id) => this._series.get(id) && !this._series.get(id).error,
+    );
+    if (!anyLoaded) return null;
 
     const midnight = localMidnight();
     const dayEnd = new Date(midnight.getTime() + 86400000);
@@ -297,12 +324,7 @@ class TidesPlusCard extends HTMLElement {
       });
     });
 
-    if (!perStation.length) {
-      this.shadowRoot.innerHTML = this._shell(
-        `<div style="padding:16px;">No tide data yet — waiting for the coordinator refresh.</div>`,
-      );
-      return;
-    }
+    if (!perStation.length) return null;
 
     if (!isFinite(heightMin)) heightMin = 0;
     if (!isFinite(heightMax)) heightMax = 1;
@@ -311,30 +333,75 @@ class TidesPlusCard extends HTMLElement {
     heightMin -= pad;
     heightMax += pad;
 
-    this._perStation = perStation;
-
-    const svg = this._buildSvg({
+    return {
       hass, unit, perStation, tMin, tMax, heightMin, heightMax,
       sunTimes: daySunTimes(hass, this._config.sun_entity),
       now: Date.now(),
-    });
+    };
+  }
 
-    const legend = perStation
+  _render() {
+    if (!this._config) return;
+    const ctx = this._prepare();
+    const rendererChanged = this._renderer !== this._config.renderer;
+
+    if (!ctx) {
+      this.shadowRoot.innerHTML = this._shell(
+        `<div style="padding:16px;">Loading tide data…</div>`,
+      );
+      this._renderer = null;
+      this._destroyApex();
+      return;
+    }
+
+    if (rendererChanged && this._config.renderer !== "apex") {
+      this._destroyApex();
+    }
+
+    this._renderer = this._config.renderer;
+    this._perStation = ctx.perStation;
+    this._chartCtx = null;
+
+    if (this._config.renderer === "apex") {
+      this._renderApex(ctx);
+    } else {
+      this._renderNative(ctx);
+    }
+  }
+
+  _shell(inner) { return `<ha-card>${inner}</ha-card>`; }
+
+  _headerHtml(ctx) {
+    const dateStr = new Date().toLocaleDateString(
+      ctx.hass && ctx.hass.locale && ctx.hass.locale.language,
+      { weekday: "long", month: "long", day: "numeric" },
+    );
+    const rendererBadge = this._config.renderer === "apex" ? "ApexCharts" : "native SVG";
+    return `<div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85; display:flex; justify-content:space-between; align-items:center;">
+      <span>${dateStr}</span>
+      <span style="font-size:11px; opacity:.6;">${rendererBadge}</span>
+    </div>`;
+  }
+
+  _legendHtml(ctx) {
+    const legend = ctx.perStation
       .map((s) =>
         `<span style="display:inline-flex;align-items:center;margin-right:12px;">
            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:6px;"></span>
-           ${s.label}${s.currentY != null ? " · " + s.currentY.toFixed(2) + " " + unitLabel(unit) : ""}
+           ${s.label}${s.currentY != null ? " · " + s.currentY.toFixed(2) + " " + unitLabel(ctx.unit) : ""}
          </span>`,
       )
       .join("");
+    return `<div style="padding: 4px 16px 12px; font-size: 12px;">${legend}</div>`;
+  }
 
-    const dateStr = new Date().toLocaleDateString(
-      hass && hass.locale && hass.locale.language,
-      { weekday: "long", month: "long", day: "numeric" },
-    );
 
+  // ---------- Native renderer ----------
+
+  _renderNative(ctx) {
+    const svg = this._buildSvg(ctx);
     this.shadowRoot.innerHTML = this._shell(`
-      <div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85;">${dateStr}</div>
+      ${this._headerHtml(ctx)}
       <div style="padding: 0 8px; position: relative;" id="tides-chart-wrap">
         ${svg}
         <div id="tides-tooltip" style="
@@ -342,18 +409,13 @@ class TidesPlusCard extends HTMLElement {
           background: var(--card-background-color, #fff);
           border: 1px solid rgba(0,0,0,0.15); border-radius: 6px;
           padding: 6px 8px; font-size: 12px; line-height: 1.35;
-          box-shadow: 0 2px 6px rgba(0,0,0,0.12); transform: translate(-50%, -100%);
+          box-shadow: 0 2px 6px rgba(0,0,0,0.12);
           white-space: nowrap; z-index: 2;
         "></div>
       </div>
-      <div style="padding: 4px 16px 12px; font-size: 12px;">${legend}</div>
+      ${this._legendHtml(ctx)}
     `);
-
     this._attachInteractivity();
-  }
-
-  _shell(inner) {
-    return `<ha-card>${inner}</ha-card>`;
   }
 
   _buildSvg(ctx) {
@@ -406,9 +468,7 @@ class TidesPlusCard extends HTMLElement {
       if (!st.samples.length) continue;
       const pathD =
         "M " +
-        st.samples
-          .map(([t, y]) => `${xOf(t).toFixed(2)} ${yOf(y).toFixed(2)}`)
-          .join(" L ");
+        st.samples.map(([t, y]) => `${xOf(t).toFixed(2)} ${yOf(y).toFixed(2)}`).join(" L ");
       const areaD =
         pathD +
         ` L ${xOf(st.samples[st.samples.length - 1][0]).toFixed(2)} ${(y0 + chartH).toFixed(2)}` +
@@ -432,15 +492,12 @@ class TidesPlusCard extends HTMLElement {
       nowMark += `<text x="${nx + 4}" y="${y0 + 12}" font-size="10" fill="${NOW_STROKE}" font-weight="600">NOW</text>`;
     }
 
-    // Interactive layer: crosshair + station dots, hidden until mousemove.
     let cursorLayer = `<g id="tides-cursor" style="display:none; pointer-events:none;">`;
     cursorLayer += `<line id="tides-crosshair" x1="0" y1="${y0}" x2="0" y2="${y0 + chartH}" stroke="rgba(0,0,0,0.35)" stroke-width="1" stroke-dasharray="3 3" />`;
     for (const st of perStation) {
       cursorLayer += `<circle data-station="${st.id}" r="4.5" fill="${st.color}" stroke="#fff" stroke-width="1.5" cx="0" cy="0" />`;
     }
     cursorLayer += `</g>`;
-
-    // Invisible hit rect so pointer events fire across the whole chart area.
     const hit = `<rect id="tides-hit" x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="transparent" style="cursor: crosshair;" />`;
 
     return `
@@ -459,14 +516,10 @@ class TidesPlusCard extends HTMLElement {
 
   _attachInteractivity() {
     const svg = this.shadowRoot.getElementById("tides-svg");
-    if (!svg) return;
     const hit = this.shadowRoot.getElementById("tides-hit");
-    if (!hit) return;
-
-    const onMove = (evt) => this._updateCursor(evt);
-    const onLeave = () => this._hideCursor();
-    hit.addEventListener("pointermove", onMove);
-    hit.addEventListener("pointerleave", onLeave);
+    if (!svg || !hit) return;
+    hit.addEventListener("pointermove", (e) => this._updateCursor(e));
+    hit.addEventListener("pointerleave", () => this._hideCursor());
   }
 
   _updateCursor(evt) {
@@ -479,7 +532,6 @@ class TidesPlusCard extends HTMLElement {
     const wrap = this.shadowRoot.getElementById("tides-chart-wrap");
     if (!svg || !cursor || !crosshair || !tooltip || !wrap) return;
 
-    // Convert client X to SVG-viewBox X.
     const pt = svg.createSVGPoint();
     pt.x = evt.clientX;
     pt.y = evt.clientY;
@@ -512,12 +564,10 @@ class TidesPlusCard extends HTMLElement {
     tooltip.innerHTML = lines.join("");
     tooltip.style.display = "";
 
-    // Position tooltip in wrap-relative CSS pixels.
     const wrapRect = wrap.getBoundingClientRect();
     const cssX = evt.clientX - wrapRect.left;
-    const cssYtop = 8;
     tooltip.style.left = cssX + "px";
-    tooltip.style.top = cssYtop + "px";
+    tooltip.style.top = "8px";
     tooltip.style.transform = "translate(-50%, 0)";
   }
 
@@ -527,18 +577,170 @@ class TidesPlusCard extends HTMLElement {
     if (cursor) cursor.style.display = "none";
     if (tooltip) tooltip.style.display = "none";
   }
-}
 
 
-function niceStep(rough) {
-  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
-  const norm = rough / pow;
-  let mult;
-  if (norm < 1.5) mult = 1;
-  else if (norm < 3) mult = 2;
-  else if (norm < 7) mult = 5;
-  else mult = 10;
-  return mult * pow;
+  // ---------- ApexCharts renderer ----------
+
+  async _renderApex(ctx) {
+    // Build shell once so the chart's <div> stays stable across re-renders.
+    if (!this.shadowRoot.getElementById("tides-apex-wrap")) {
+      this.shadowRoot.innerHTML = this._shell(`
+        ${this._headerHtml(ctx)}
+        <div id="tides-apex-wrap" style="padding: 0 8px;">
+          <div id="tides-apex-chart"></div>
+        </div>
+        <div id="tides-apex-legend"></div>
+      `);
+    } else {
+      const header = this.shadowRoot.querySelector("ha-card > div");
+      if (header) header.outerHTML = this._headerHtml(ctx);
+    }
+    const legendEl = this.shadowRoot.getElementById("tides-apex-legend");
+    if (legendEl) legendEl.outerHTML =
+      `<div id="tides-apex-legend">${this._legendHtml(ctx).replace(/^<div[^>]*>|<\/div>$/g, "")}</div>`;
+
+    try {
+      await ensureApexLoaded();
+    } catch (err) {
+      this.shadowRoot.innerHTML = this._shell(
+        `<div style="padding:16px;">Failed to load ApexCharts: ${err.message}</div>`,
+      );
+      return;
+    }
+
+    const options = this._buildApexOptions(ctx);
+    const el = this.shadowRoot.getElementById("tides-apex-chart");
+    if (!el) return;
+
+    if (this._apexChart) {
+      try {
+        this._apexChart.updateOptions(options, true, true);
+        return;
+      } catch (_) {
+        this._destroyApex();
+      }
+    }
+    this._apexChart = new window.ApexCharts(el, options);
+    this._apexChart.render();
+  }
+
+  _destroyApex() {
+    if (this._apexChart) {
+      try { this._apexChart.destroy(); } catch (_) {}
+      this._apexChart = null;
+    }
+  }
+
+  _buildApexOptions(ctx) {
+    const { unit, perStation, tMin, tMax, heightMin, heightMax, sunTimes, now, hass } = ctx;
+
+    const series = perStation.map((st) => ({
+      name: st.label,
+      color: st.color,
+      data: st.samples.map(([t, y]) => ({ x: t, y })),
+    }));
+
+    // Highlight the actual NOAA knots as bigger discrete markers.
+    const discreteMarkers = [];
+    perStation.forEach((st, seriesIndex) => {
+      for (const k of st.knots) {
+        // Find the sample index closest to this knot time.
+        let idx = 0;
+        let bestDelta = Infinity;
+        for (let i = 0; i < st.samples.length; i++) {
+          const d = Math.abs(st.samples[i][0] - k.t);
+          if (d < bestDelta) { bestDelta = d; idx = i; } else if (st.samples[i][0] > k.t) break;
+        }
+        discreteMarkers.push({
+          seriesIndex,
+          dataPointIndex: idx,
+          fillColor: st.color,
+          strokeColor: "#fff",
+          size: 5,
+        });
+      }
+    });
+
+    const xAnnotations = [];
+    if (sunTimes.sunrise) {
+      xAnnotations.push({
+        x: tMin, x2: sunTimes.sunrise.getTime(),
+        fillColor: NIGHT_FILL, opacity: 1, borderColor: "transparent",
+      });
+    }
+    if (sunTimes.sunset) {
+      xAnnotations.push({
+        x: sunTimes.sunset.getTime(), x2: tMax,
+        fillColor: NIGHT_FILL, opacity: 1, borderColor: "transparent",
+      });
+    }
+    if (now >= tMin && now <= tMax) {
+      xAnnotations.push({
+        x: now,
+        strokeDashArray: 0,
+        borderColor: NOW_STROKE,
+        label: {
+          text: "NOW",
+          orientation: "horizontal",
+          borderColor: NOW_STROKE,
+          style: {
+            color: "#fff",
+            background: NOW_STROKE,
+            fontSize: "10px",
+            fontWeight: 600,
+          },
+        },
+      });
+    }
+
+    return {
+      chart: {
+        type: "area",
+        height: 240,
+        toolbar: { show: false },
+        zoom: { enabled: true, type: "x" },
+        animations: { enabled: false },
+        fontFamily: "var(--primary-font-family, sans-serif)",
+        background: "transparent",
+      },
+      theme: { mode: "light" },
+      series,
+      dataLabels: { enabled: false },
+      stroke: { curve: "straight", width: 2 },
+      fill: {
+        type: "gradient",
+        gradient: { opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 100] },
+      },
+      markers: { size: 0, discrete: discreteMarkers, hover: { size: 6 } },
+      xaxis: {
+        type: "datetime",
+        min: tMin, max: tMax,
+        labels: {
+          datetimeUTC: false,
+          format: (hass && hass.locale && hass.locale.time_format === "24") ? "H:mm" : "h TT",
+        },
+        tooltip: { enabled: false },
+        axisTicks: { show: true },
+      },
+      yaxis: {
+        min: heightMin, max: heightMax,
+        title: { text: unitLabel(unit) },
+        labels: {
+          formatter: (v) => `${v.toFixed(1)}`,
+        },
+      },
+      tooltip: {
+        shared: true,
+        x: { format: "h:mm TT" },
+        y: {
+          formatter: (v) => (v == null ? "-" : `${v.toFixed(2)} ${unitLabel(unit)}`),
+        },
+      },
+      grid: { borderColor: "rgba(0,0,0,0.08)" },
+      legend: { show: false },
+      annotations: { xaxis: xAnnotations },
+    };
+  }
 }
 
 
@@ -549,7 +751,7 @@ if (!window.customCards.find((c) => c.type === CARD_TAG)) {
   window.customCards.push({
     type: CARD_TAG,
     name: "Tides Plus",
-    description: "Tide curve with hi/lo markers, day/night shading, and NOW indicator.",
+    description: "Tide curve with hi/lo markers, day/night shading, and NOW indicator. Renderer: native or apex.",
     preview: false,
   });
 }

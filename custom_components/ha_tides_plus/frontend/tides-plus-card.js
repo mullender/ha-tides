@@ -245,6 +245,107 @@ class _TidesBase extends HTMLElement {
     this._loading = new Set();
     this._loaded = false;
     this._tickTimer = null;
+    this._windowOffset = 0;   // ms shift from the "current" anchor
+  }
+
+  _baseDefaults() {
+    return {
+      sun_entity: "sun.sun",
+      anchor: "day",
+      hours_before: 0,
+      hours_after: 24,
+      buttons: "forward-backward",
+    };
+  }
+
+  _stepMs() {
+    const cfg = this._config;
+    if (cfg.anchor === "day") return 86400000;
+    return (Number(cfg.hours_before || 0) + Number(cfg.hours_after || 0)) * 3600000
+      || 86400000;
+  }
+
+  _computeWindow() {
+    const cfg = this._config;
+    let anchorMs;
+    if (cfg.anchor === "now") {
+      anchorMs = Date.now() + this._windowOffset;
+    } else {
+      const mid = localMidnight();
+      anchorMs = mid.getTime() + this._windowOffset;
+    }
+    return {
+      tMin: anchorMs - Number(cfg.hours_before || 0) * 3600000,
+      tMax: anchorMs + Number(cfg.hours_after || 24) * 3600000,
+    };
+  }
+
+  _shift(direction) {
+    if (direction === 0) this._windowOffset = 0;
+    else this._windowOffset += direction * this._stepMs();
+    this._onShift();
+    this._render();
+  }
+
+  // Subclasses can override to tear down mid-render state before a shift.
+  _onShift() {}
+
+  _navHeader(ctx) {
+    const label = this._windowLabel(ctx);
+    const cfg = this._config;
+    const showNav = cfg.buttons !== "none";
+    const resetLabel = cfg.anchor === "now" ? "Now" : "Today";
+    const atRest = this._windowOffset === 0;
+    const stepLabel = cfg.anchor === "day" ? "day" : "window";
+    const nav = showNav
+      ? `<span style="display:inline-flex;align-items:center;gap:4px;">
+           <button class="tp-nav" data-nav="reset" title="Back to ${resetLabel.toLowerCase()}"
+                   ${atRest ? "disabled" : ""}
+                   style="${NAV_BTN_STYLE}${atRest ? NAV_BTN_DISABLED : ""}">${resetLabel}</button>
+           <button class="tp-nav" data-nav="prev" title="Previous ${stepLabel}"
+                   style="${NAV_BTN_STYLE}">‹</button>
+           <button class="tp-nav" data-nav="next" title="Next ${stepLabel}"
+                   style="${NAV_BTN_STYLE}">›</button>
+         </span>`
+      : "";
+    return `<div style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+      <span>${label}</span>
+      ${nav}
+    </div>`;
+  }
+
+  _windowLabel(ctx) {
+    const hass = this._hass;
+    const startD = new Date(ctx.tMin);
+    const endD = new Date(ctx.tMax);
+    const spanMs = ctx.tMax - ctx.tMin;
+    const startIsMidnight = startD.getHours() === 0 && startD.getMinutes() === 0;
+    if (startIsMidnight && Math.abs(spanMs % 86400000) < 1000) {
+      const days = Math.round(spanMs / 86400000);
+      if (days === 1) {
+        return startD.toLocaleDateString(
+          hass && hass.locale && hass.locale.language,
+          { weekday: "long", month: "long", day: "numeric" },
+        );
+      }
+      const endDisplay = new Date(ctx.tMax - 86400000);
+      const fmt = { month: "short", day: "numeric" };
+      return `${startD.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)} → ${endDisplay.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)}`;
+    }
+    const fmt = { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+    return `${startD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)} → ${endD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)}`;
+  }
+
+  _attachNavHandlers() {
+    this.shadowRoot.querySelectorAll("button.tp-nav").forEach((btn) => {
+      if (btn.disabled) return;
+      btn.addEventListener("click", () => {
+        const nav = btn.dataset.nav;
+        if (nav === "prev") this._shift(-1);
+        else if (nav === "next") this._shift(1);
+        else if (nav === "reset") this._shift(0);
+      });
+    });
   }
 
   connectedCallback() {
@@ -395,7 +496,6 @@ class TidesPlusCard extends _TidesBase {
     this._perStation = [];
     this._chartCtx = null;
     this._apexChart = null;
-    this._windowOffset = 0;   // ms shift from the "current" anchor
   }
 
   disconnectedCallback() {
@@ -405,11 +505,7 @@ class TidesPlusCard extends _TidesBase {
 
   _defaultConfig(config) {
     return {
-      sun_entity: "sun.sun",
-      anchor: "day",
-      hours_before: 0,
-      hours_after: 24,
-      buttons: "forward-backward",
+      ...this._baseDefaults(),
       ...config,
       stations: config.stations.map(String),
     };
@@ -423,38 +519,9 @@ class TidesPlusCard extends _TidesBase {
 
   getCardSize() { return 4; }
 
-  _stepMs() {
-    // How far one prev/next click shifts the anchor.
-    const cfg = this._config;
-    if (cfg.anchor === "day") return 86400000;
-    return (Number(cfg.hours_before || 0) + Number(cfg.hours_after || 0)) * 3600000
-      || 86400000;
-  }
-
-  _computeWindow() {
-    const cfg = this._config;
-    let anchorMs;
-    if (cfg.anchor === "now") {
-      anchorMs = Date.now() + this._windowOffset;
-    } else {
-      const mid = localMidnight();
-      anchorMs = mid.getTime() + this._windowOffset;
-    }
-    return {
-      tMin: anchorMs - Number(cfg.hours_before || 0) * 3600000,
-      tMax: anchorMs + Number(cfg.hours_after || 24) * 3600000,
-    };
-  }
-
-  _shift(direction) {
-    // direction: -1 = prev, +1 = next, 0 = reset
-    if (direction === 0) {
-      this._windowOffset = 0;
-    } else {
-      this._windowOffset += direction * this._stepMs();
-    }
+  _onShift() {
+    // Force full rebuild so the apex axis + annotations refresh.
     this._destroyApex();
-    this._render();
   }
 
   _render() {
@@ -487,67 +554,6 @@ class TidesPlusCard extends _TidesBase {
     this._perStation = ctx.perStation;
     this._renderApex(ctx);
     this._attachNavHandlers();
-  }
-
-  _navHeader(ctx) {
-    const label = this._windowLabel(ctx);
-    const cfg = this._config;
-    const showNav = cfg.buttons !== "none";
-    const resetLabel = cfg.anchor === "now" ? "Now" : "Today";
-    const atRest = this._windowOffset === 0;
-    const stepLabel = cfg.anchor === "day" ? "day" : "window";
-
-    const nav = showNav
-      ? `<span style="display:inline-flex;align-items:center;gap:4px;">
-           <button class="tp-nav" data-nav="reset" title="Back to ${resetLabel.toLowerCase()}"
-                   ${atRest ? "disabled" : ""}
-                   style="${NAV_BTN_STYLE}${atRest ? NAV_BTN_DISABLED : ""}">${resetLabel}</button>
-           <button class="tp-nav" data-nav="prev" title="Previous ${stepLabel}"
-                   style="${NAV_BTN_STYLE}">‹</button>
-           <button class="tp-nav" data-nav="next" title="Next ${stepLabel}"
-                   style="${NAV_BTN_STYLE}">›</button>
-         </span>`
-      : "";
-    return `<div style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
-      <span>${label}</span>
-      ${nav}
-    </div>`;
-  }
-
-  _windowLabel(ctx) {
-    const hass = this._hass;
-    const startD = new Date(ctx.tMin);
-    const endD = new Date(ctx.tMax);
-    const spanMs = ctx.tMax - ctx.tMin;
-    const startIsMidnight = startD.getHours() === 0 && startD.getMinutes() === 0;
-    // Whole-day at local midnight, span multiple of 24h → date-only label.
-    if (startIsMidnight && Math.abs(spanMs % 86400000) < 1000) {
-      const days = Math.round(spanMs / 86400000);
-      if (days === 1) {
-        return startD.toLocaleDateString(
-          hass && hass.locale && hass.locale.language,
-          { weekday: "long", month: "long", day: "numeric" },
-        );
-      }
-      const endDisplay = new Date(ctx.tMax - 86400000);   // inclusive of last day
-      const fmt = { month: "short", day: "numeric" };
-      return `${startD.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)} → ${endDisplay.toLocaleDateString(hass && hass.locale && hass.locale.language, fmt)}`;
-    }
-    // Otherwise show full range with times.
-    const fmt = { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
-    return `${startD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)} → ${endD.toLocaleString(hass && hass.locale && hass.locale.language, fmt)}`;
-  }
-
-  _attachNavHandlers() {
-    this.shadowRoot.querySelectorAll("button.tp-nav").forEach((btn) => {
-      if (btn.disabled) return;
-      btn.addEventListener("click", () => {
-        const nav = btn.dataset.nav;
-        if (nav === "prev") this._shift(-1);
-        else if (nav === "next") this._shift(1);
-        else if (nav === "reset") this._shift(0);
-      });
-    });
   }
 
   _legendHtml(ctx) {
@@ -777,13 +783,13 @@ class TidesPlusCard extends _TidesBase {
       series,
       dataLabels: { enabled: false },
       stroke: { curve: "straight", width: 2 },
-      // Solid-ish water fill under the curve. Keeps the station colour so
-      // multi-station charts stay distinguishable, but a stronger opacity
-      // (single stop) gives the "sea level filling in" look rather than the
-      // washed-out gradient the earlier default produced.
+      // Solid water fill under the curve — reaches all the way down to the
+      // axis so the shading reads as a filled body of water rather than a
+      // fading gradient. Keeps the per-station colour for multi-station
+      // distinguishability.
       fill: {
-        type: "gradient",
-        gradient: { opacityFrom: 0.65, opacityTo: 0.35, stops: [0, 100] },
+        type: "solid",
+        opacity: 0.5,
       },
       markers: { size: 0, discrete: discreteMarkers, hover: { size: 6 } },
       xaxis: {
@@ -832,6 +838,7 @@ class TidesPlusCard extends _TidesBase {
 class TidesPlusSummaryCard extends _TidesBase {
   _defaultConfig(config) {
     return {
+      ...this._baseDefaults(),
       ...config,
       stations: config.stations.map(String),
     };
@@ -849,10 +856,6 @@ class TidesPlusSummaryCard extends _TidesBase {
 
     const u = unitLabel(ctx.unit);
     const hass = ctx.hass;
-    const dateStr = new Date().toLocaleDateString(
-      hass && hass.locale && hass.locale.language,
-      { weekday: "long", month: "long", day: "numeric" },
-    );
 
     const stationsHtml = ctx.perStation.map((s) => {
       const allY = s.dayKnots.map((k) => k.y);
@@ -872,9 +875,10 @@ class TidesPlusSummaryCard extends _TidesBase {
     }).join("");
 
     this.shadowRoot.innerHTML = shell(`
-      <div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85;">${dateStr}</div>
+      ${this._navHeader(ctx)}
       ${stationsHtml}
     `);
+    this._attachNavHandlers();
   }
 }
 

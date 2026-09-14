@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import ApiError, get_station
 from .const import (
@@ -23,10 +27,29 @@ from .const import (
 from .coordinator import NoaaTidesCoordinator, NoaaTidesEntry
 from .events import ExtremumEventScheduler
 from .helpers import format_device_name
+from .websocket_api import async_register as async_register_ws
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+_FRONTEND_URL = "/noaa_tides_plus/tides-plus-card.js"
+_FRONTEND_DIR = Path(__file__).parent / "frontend"
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """One-time domain setup: WebSocket commands and the Lovelace card asset."""
+    async_register_ws(hass)
+
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                _FRONTEND_URL, str(_FRONTEND_DIR / "tides-plus-card.js"), False
+            )
+        ]
+    )
+    add_extra_js_url(hass, _FRONTEND_URL)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:

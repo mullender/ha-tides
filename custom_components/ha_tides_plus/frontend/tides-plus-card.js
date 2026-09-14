@@ -411,12 +411,6 @@ class _TidesBase extends HTMLElement {
     }
   }
 
-  _computeWindow() {
-    // Default: today, 00:00 → 24:00 local.
-    const midnight = localMidnight();
-    return { tMin: midnight.getTime(), tMax: midnight.getTime() + 86400000 };
-  }
-
   _prepare() {
     const hass = this._hass;
     const stations = this._config.stations;

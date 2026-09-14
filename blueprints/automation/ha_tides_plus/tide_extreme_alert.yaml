@@ -1,29 +1,36 @@
 blueprint:
   name: Tide extreme alert (crosses threshold)
   description: >
-    Fires once a day at a chosen local time and notifies you when the
-    next high or low tide within a lookahead window crosses a threshold.
+    Fires once a day at a chosen local time and notifies you when the next
+    high or low tide within a lookahead window crosses a threshold height.
+
+
     Great for planning ahead — "notify me at noon the day prior about
-    tomorrow morning's ultra-low tide" so you can pack for a tidepool
-    trip. Optional sun-aware daylight filter so overnight lows do not
-    ping you.
+    tomorrow morning's ultra-low tide" so you can pack for a tidepool trip.
+    Optional sun-aware daylight filter so overnight lows do not ping you.
   domain: automation
   source_url: https://raw.githubusercontent.com/mullender/ha-tides/main/blueprints/automation/ha_tides_plus/tide_extreme_alert.yaml
   input:
     station:
       name: Tide station
-      description: |
-        The Tides Plus station device. The blueprint infers which sensor
-        to watch from your **Direction** choice below.
+      description: >
+        The Tides Plus station device.
+
+
+        The blueprint infers which sensor to watch from the Direction
+        choice below.
       selector:
         device:
           filter:
             - integration: ha_tides_plus
     threshold_direction:
       name: Direction
-      description: |
-        - **Below** — watches the next *low* tide (typical tidepool case).
-        - **Above** — watches the next *high* tide (dock height, king-high warning, storm surge).
+      description: >
+        Below — watches the next low tide (typical tidepool case).
+
+
+        Above — watches the next high tide (dock height, king-high
+        warning, storm surge).
       default: below
       selector:
         select:
@@ -34,10 +41,12 @@ blueprint:
               label: Notify when the next HIGH is at or above the threshold
     threshold:
       name: Height threshold
-      description: |
-        Value is in the same unit as the Tides Plus sensor — `ft` on a
-        US-defaults HA install, `m` on a metric one. Check any tide
-        sensor's current display to confirm.
+      description: >
+        Value is in the same unit as the Tides Plus sensor — ft on a
+        US-defaults HA install, m on a metric one.
+
+
+        Check any tide sensor's current display to confirm your unit.
       default: 1.0
       selector:
         number:
@@ -47,22 +56,25 @@ blueprint:
           mode: box
     notify_at:
       name: Notify at (local time of day)
-      description: |
-        The blueprint runs once each day at this time. Pick the lead time
-        that suits you — for example:
-        - **12:00** — noon the day before
-        - **20:00** — the evening before
-        - **06:00** — same-day early warning
+      description: >
+        The blueprint runs once each day at this time.
+
+
+        Pick the lead time that suits you — for example 12:00 (noon the
+        day before), 20:00 (the evening before), or 06:00 (same-day
+        early warning).
       default: "12:00:00"
       selector:
         time: {}
     lookahead_hours:
       name: Lookahead
-      description: |
+      description: >
         How far into the future to look for a matching tide when the
         blueprint runs.
-        - **24–30 h** — "some time before tomorrow noon" if firing at noon
-        - **48 h** — covers the next full high/low cycle
+
+
+        24–30 h covers "some time before tomorrow noon" if firing at
+        noon; 48 h covers the next full high/low cycle.
       default: 30
       selector:
         number:
@@ -73,10 +85,13 @@ blueprint:
           unit_of_measurement: hr
     require_daylight:
       name: Only notify if the event happens in daylight
-      description: |
-        Uses `sun.sun`'s `next_rising` / `next_setting`, projecting the
-        local time-of-day onto the event's date. Accurate to a few
-        minutes at ±1 day (sunrise drifts ≈ 1 min/day).
+      description: >
+        Uses sun.sun's next_rising and next_setting, projecting the local
+        time-of-day onto the event's date.
+
+
+        Accurate to a few minutes at ±1 day since sunrise drifts about
+        one minute per day.
       default: true
       selector:
         boolean: {}
@@ -89,29 +104,32 @@ blueprint:
             domain: sun
     notify_service:
       name: Notification service
-      description: |
-        Notify service to call. Examples:
-        - `notify.persistent_notification` — HA sidebar notification (default)
-        - `notify.mobile_app_<your_phone>` — Companion app push
-        - `notify.notify` — the default group
+      description: >
+        Notify service to call.
+
+
+        Examples: notify.persistent_notification (HA sidebar,
+        default), notify.mobile_app_YOUR_PHONE (Companion app push),
+        notify.notify (default group).
       default: notify.persistent_notification
       selector:
         text: {}
     notification_title:
       name: Notification title
-      description: |
-        Template-friendly. Available placeholders:
-        - `{{ station_name }}` — e.g. *"9445882: Eagle Harbor, WA"*
-        - `{{ event_height }}` — the tide height, as a number-string
-        - `{{ event_unit }}` — `ft` or `m`, matching the sensor
-        - `{{ event_time_local }}` — a datetime (use `.strftime('%-I:%M %p')`)
-        - `{{ when_day }}` — `today` / `tomorrow` / weekday name
+      description: >
+        Template-friendly.
+
+
+        Placeholders: {{ station_name }}, {{ event_height }},
+        {{ event_unit }}, {{ event_time_local }} (a datetime — use
+        .strftime('%-I:%M %p')), {{ when_day }} (today / tomorrow /
+        weekday name).
       default: "Tide alert for {{ station_name }}"
       selector:
         text: {}
     notification_message:
       name: Notification message
-      description: |
+      description: >
         Template-friendly. Same placeholders as the title.
       default: >-
         Tide reaching {{ event_height }} {{ event_unit }}
@@ -121,17 +139,19 @@ blueprint:
           multiline: true
     notification_data:
       name: Notification data (advanced)
-      description: |
-        Extra key/value data merged into the notify service's `data:` field.
-        By default `url` points to this station's device page so tapping the
-        notification opens it in the Companion app. Common overrides:
-        - `url:` — deep-link path (relative, e.g. `/lovelace/tides`)
-        - `push:` — iOS sound / interruption-level / critical
-        - `channel:` — Android notification channel
-        - `actions:` — clickable action buttons
-        - `image:` — inline preview image URL
+      description: >
+        Extra key/value data merged into the notify service's data field.
 
-        See the HA Companion app docs for the full list.
+
+        By default url points to this station's device page so tapping
+        the notification opens it in the Companion app. Add your own
+        keys or override url.
+
+
+        Common overrides: url (deep-link path), push (iOS sound /
+        interruption level / critical), channel (Android notification
+        channel), actions (clickable action buttons), image (inline
+        preview URL). See the HA Companion app docs for the full list.
       default: {}
       selector:
         object: {}
@@ -205,12 +225,6 @@ condition:
           {% elif not require_daylight %}
             true
           {% else %}
-            {# Project the sun's time-of-day onto the event's date. HA's
-               next_rising / next_setting are always the NEXT occurrence,
-               so their HH:MM is the local sunrise / sunset for the current
-               location; sunrise drifts ~1 min/day so applying today's
-               time-of-day to tomorrow or the day after is accurate to a
-               few minutes. #}
             {% set sr = as_datetime(state_attr(sun_entity, 'next_rising')) %}
             {% set ss = as_datetime(state_attr(sun_entity, 'next_setting')) %}
             {% if sr is none or ss is none %}
@@ -230,8 +244,6 @@ condition:
 
 action:
   - variables:
-      # Default data merged first, user's notification_data wins on any key
-      # (so they can override the click URL if they want).
       _default_data:
         url: "/config/devices/device/{{ station_device }}"
       merged_data: "{{ _default_data | combine(notification_data or {}) }}"

@@ -791,6 +791,12 @@ class TidesPlusCard extends _TidesBase {
         type: "solid",
         opacity: 0.5,
       },
+      // By default apex fills area series down to y=0; when the y-axis
+      // extends below zero (heightMin < 0 after padding) this leaves a
+      // white strip along the floor. "end" fills down to the plot floor.
+      plotOptions: {
+        area: { fillTo: "end" },
+      },
       markers: { size: 0, discrete: discreteMarkers, hover: { size: 6 } },
       xaxis: {
         type: "datetime", min: tMin, max: tMax,

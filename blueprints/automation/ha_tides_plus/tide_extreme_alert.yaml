@@ -1,43 +1,44 @@
 blueprint:
   name: Tide extreme alert (crosses threshold)
   description: >
-    Fires at a chosen time each day and notifies you when the next high or
-    low tide within a lookahead window crosses a threshold height. Great
-    for planning ahead — e.g. "notify me at noon the day prior about
+    Fires once a day at a chosen local time and notifies you when the
+    next high or low tide within a lookahead window crosses a threshold.
+    Great for planning ahead — "notify me at noon the day prior about
     tomorrow morning's ultra-low tide" so you can pack for a tidepool
-    trip. Optional daytime-window filter so overnight lows don't ping you.
+    trip. Optional sun-aware daylight filter so overnight lows do not
+    ping you.
   domain: automation
   source_url: https://raw.githubusercontent.com/mullender/ha-tides/main/blueprints/automation/ha_tides_plus/tide_extreme_alert.yaml
   input:
-    tide_time_sensor:
-      name: Tide time sensor
+    station:
+      name: Tide station
       description: >
-        The Tides Plus timestamp sensor to watch — pick either
-        sensor.<station>_next_low_tide or sensor.<station>_next_high_tide.
+        Pick the Tides Plus station device. The blueprint infers which
+        Tides Plus sensor to watch from your "direction" choice below.
       selector:
-        entity:
+        device:
           filter:
             - integration: ha_tides_plus
-              domain: sensor
-    tide_height_sensor:
-      name: Corresponding height sensor
+    threshold_direction:
+      name: Direction
       description: >
-        The paired height sensor —
-        sensor.<station>_next_low_tide_height or
-        sensor.<station>_next_high_tide_height, matching your choice above.
+        "Below" watches the next low tide (typical tidepool case);
+        "above" watches the next high tide (dock height, king-high
+        warning, storm surge, …).
+      default: below
       selector:
-        entity:
-          filter:
-            - integration: ha_tides_plus
-              domain: sensor
+        select:
+          options:
+            - value: below
+              label: Notify when the next LOW is at or below the threshold
+            - value: above
+              label: Notify when the next HIGH is at or above the threshold
     threshold:
       name: Height threshold
       description: >
-        Notify when the coming extreme's height crosses this value, in the
-        height sensor's unit (ft or m). For a "falling below X" alert
-        (typical tidepool case) pair with the next_low_tide sensor and
-        pick "below". For a "rising above X" alert (dock height, storm
-        surge) pair with next_high_tide and pick "above".
+        Value is in the same unit as the Tides Plus sensor — feet on a
+        US-defaults HA install, metres on a metric one. Check any tide
+        sensor's current display to confirm.
       default: 1.0
       selector:
         number:
@@ -45,22 +46,12 @@ blueprint:
           max: 30
           step: 0.1
           mode: box
-    threshold_direction:
-      name: Threshold direction
-      default: below
-      selector:
-        select:
-          options:
-            - value: below
-              label: Height at or below threshold (use with next_low_tide)
-            - value: above
-              label: Height at or above threshold (use with next_high_tide)
     notify_at:
       name: Notify at (local time of day)
       description: >
-        The blueprint runs once each day at this time. Pick something that
-        gives you the lead time you want — noon the day prior, 8 PM the
-        night before, 6 AM same-day, etc.
+        The blueprint runs once each day at this time. Pick something
+        that gives the lead time you want — noon the day prior, 8 PM
+        the night before, 6 AM same-day, etc.
       default: "12:00:00"
       selector:
         time: {}
@@ -68,8 +59,8 @@ blueprint:
       name: Lookahead
       description: >
         How far into the future to look for a matching tide when the
-        blueprint runs. 30 h covers "some time before tomorrow noon" when
-        firing at noon; 48 h covers the next two-tide cycle comfortably.
+        blueprint runs. 30 h covers "some time before tomorrow noon"
+        when firing at noon; 48 h covers the next full cycle.
       default: 30
       selector:
         number:
@@ -78,23 +69,22 @@ blueprint:
           step: 1
           mode: slider
           unit_of_measurement: hr
-    require_daytime_event:
-      name: Only notify if the event is in the daytime window
+    require_daylight:
+      name: Only notify if the event happens in daylight
+      description: >
+        Uses sun.sun's next_rising / next_setting, projecting the local
+        time-of-day onto the event's date. Accurate to a few minutes
+        at ±1 day (sunrise drifts ~1 min/day).
       default: true
       selector:
         boolean: {}
-    daytime_start:
-      name: Daytime window — start (local time of day)
-      description: Earliest event time (local) that counts as "daytime".
-      default: "07:00:00"
+    sun_entity:
+      name: Sun entity
+      default: sun.sun
       selector:
-        time: {}
-    daytime_end:
-      name: Daytime window — end (local time of day)
-      description: Latest event time (local) that counts as "daytime".
-      default: "19:00:00"
-      selector:
-        time: {}
+        entity:
+          filter:
+            domain: sun
     notify_service:
       name: Notification service
       description: >
@@ -107,22 +97,68 @@ blueprint:
         text: {}
     notification_title:
       name: Notification title
-      default: Tide alert
+      description: >
+        Template-friendly. Available placeholders:
+        {{ station_name }}, {{ event_height }}, {{ event_unit }},
+        {{ event_time_local }} (a datetime — use .strftime('%-I:%M %p')),
+        {{ when_day }} (today / tomorrow / weekday name).
+      default: "Tide alert for {{ station_name }}"
       selector:
         text: {}
+    notification_message:
+      name: Notification message
+      description: >
+        Template-friendly. Same placeholders as the title.
+      default: >-
+        Tide reaching {{ event_height }} {{ event_unit }}
+        at {{ event_time_local.strftime('%-I:%M %p') }} {{ when_day }}.
+      selector:
+        text:
+          multiline: true
 
 mode: single
 max_exceeded: silent
 
 variables:
-  time_entity: !input tide_time_sensor
-  height_entity: !input tide_height_sensor
-  thr: !input threshold
+  station_device: !input station
   thr_dir: !input threshold_direction
+  thr: !input threshold
   lookahead_h: !input lookahead_hours
-  require_daytime: !input require_daytime_event
-  daytime_start: !input daytime_start
-  daytime_end: !input daytime_end
+  require_daylight: !input require_daylight
+  sun_entity: !input sun_entity
+  # Sensor inference — Tides Plus entity IDs end with these suffixes
+  # regardless of the device name.
+  time_entity: >-
+    {% set ents = device_entities(station_device) %}
+    {% if thr_dir == 'below' %}
+      {{ ents | select('search', '_next_low_tide$') | list | first | default('') }}
+    {% else %}
+      {{ ents | select('search', '_next_high_tide$') | list | first | default('') }}
+    {% endif %}
+  height_entity: >-
+    {% set ents = device_entities(station_device) %}
+    {% if thr_dir == 'below' %}
+      {{ ents | select('search', '_next_low_tide_height$') | list | first | default('') }}
+    {% else %}
+      {{ ents | select('search', '_next_high_tide_height$') | list | first | default('') }}
+    {% endif %}
+  # Placeholders exposed to the user's title / message templates.
+  station_name: "{{ device_attr(station_device, 'name') or 'tide station' }}"
+  event_time_local: >-
+    {% set ts = states(time_entity) %}
+    {{ as_datetime(ts).astimezone() if ts not in ('unknown', 'unavailable', 'none', '', none) else none }}
+  event_height: "{{ states(height_entity) }}"
+  event_unit: "{{ state_attr(height_entity, 'unit_of_measurement') or '' }}"
+  when_day: >-
+    {% set ev = event_time_local %}
+    {% if ev is none %}soon
+    {% else %}
+      {% set diff = (ev.date() - now().date()).days %}
+      {% if diff == 0 %}today
+      {% elif diff == 1 %}tomorrow
+      {% else %}{{ ev.strftime('%A %b %-d') }}
+      {% endif %}
+    {% endif %}
 
 trigger:
   - platform: time
@@ -131,49 +167,48 @@ trigger:
 condition:
   - condition: template
     value_template: >-
-      {% set ts = states(time_entity) %}
-      {% if ts in ('unknown', 'unavailable', 'none', '', None) %}
+      {% if time_entity == '' or height_entity == '' %}
         false
       {% else %}
-        {% set t = as_datetime(ts) %}
-        {% set future = t > now() %}
-        {% set within = (t - now()).total_seconds() < (lookahead_h | int) * 3600 %}
-        {% set h = states(height_entity) | float(0) %}
-        {% set meets = (h <= (thr | float)) if thr_dir == 'below' else (h >= (thr | float)) %}
-        {% if not (future and within and meets) %}
+        {% set ts = states(time_entity) %}
+        {% if ts in ('unknown', 'unavailable', 'none', '', None) %}
           false
-        {% elif not require_daytime %}
-          true
         {% else %}
-          {# Local time-of-day window check on the event's own timestamp. #}
-          {% set event_local = t.astimezone() %}
-          {% set event_min = event_local.hour * 60 + event_local.minute %}
-          {% set start_h = (daytime_start.split(':')[0] | int) %}
-          {% set start_m = (daytime_start.split(':')[1] | int) %}
-          {% set end_h = (daytime_end.split(':')[0] | int) %}
-          {% set end_m = (daytime_end.split(':')[1] | int) %}
-          {% set start_min = start_h * 60 + start_m %}
-          {% set end_min = end_h * 60 + end_m %}
-          {{ start_min <= event_min <= end_min }}
+          {% set t = as_datetime(ts) %}
+          {% set future = t > now() %}
+          {% set within = (t - now()).total_seconds() < (lookahead_h | int) * 3600 %}
+          {% set h = states(height_entity) | float(0) %}
+          {% set meets = (h <= (thr | float)) if thr_dir == 'below' else (h >= (thr | float)) %}
+          {% if not (future and within and meets) %}
+            false
+          {% elif not require_daylight %}
+            true
+          {% else %}
+            {# Project the sun's time-of-day onto the event's date. HA's
+               next_rising / next_setting are always the NEXT occurrence,
+               so their HH:MM is the local sunrise / sunset for the current
+               location; sunrise drifts ~1 min/day so applying today's
+               time-of-day to tomorrow or the day after is accurate to a
+               few minutes. #}
+            {% set sr = as_datetime(state_attr(sun_entity, 'next_rising')) %}
+            {% set ss = as_datetime(state_attr(sun_entity, 'next_setting')) %}
+            {% if sr is none or ss is none %}
+              true
+            {% else %}
+              {% set sr_local = sr.astimezone() %}
+              {% set ss_local = ss.astimezone() %}
+              {% set event_local = t.astimezone() %}
+              {% set sr_min = sr_local.hour * 60 + sr_local.minute %}
+              {% set ss_min = ss_local.hour * 60 + ss_local.minute %}
+              {% set ev_min = event_local.hour * 60 + event_local.minute %}
+              {{ sr_min <= ev_min <= ss_min }}
+            {% endif %}
+          {% endif %}
         {% endif %}
       {% endif %}
 
 action:
-  - variables:
-      event_time: "{{ as_datetime(states(time_entity)).astimezone() }}"
-      event_height: "{{ states(height_entity) }}"
-      event_unit: "{{ state_attr(height_entity, 'unit_of_measurement') }}"
-      when_day: >-
-        {% set ev = as_datetime(states(time_entity)).astimezone() %}
-        {% set today = now().date() %}
-        {% set diff = (ev.date() - today).days %}
-        {% if diff == 0 %}today
-        {% elif diff == 1 %}tomorrow
-        {% else %}{{ ev.strftime('%A %b %-d') }}
-        {% endif %}
   - service: !input notify_service
     data:
       title: !input notification_title
-      message: >-
-        Tide reaching {{ event_height }} {{ event_unit }}
-        at {{ event_time.strftime('%-I:%M %p') }} {{ when_day | trim }}.
+      message: !input notification_message

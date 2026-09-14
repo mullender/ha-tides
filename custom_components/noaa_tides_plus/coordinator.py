@@ -16,7 +16,9 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 REFRESH_INTERVAL = timedelta(hours=12)
-LOOKBACK_HOURS = 12
+# 48 h back covers "local midnight yesterday" for any HA timezone regardless
+# of when the last coordinator refresh landed within its 12 h cadence.
+LOOKBACK_HOURS = 48
 FETCH_HOURS = LOOKBACK_HOURS + 7 * 24
 
 

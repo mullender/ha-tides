@@ -8,7 +8,6 @@
  *     - 9445882
  *   sun_entity: sun.sun     # optional, defaults to sun.sun
  *   unit: metric | imperial # optional, defaults to hass length preference
- *   hours: 24               # optional; when omitted, shows today (00:00-24:00 local)
  *
  * Data path: hi/lo knots come from the noaa_tides_plus/hilo_series WebSocket
  * command (metres, UTC). Interpolation is Fritsch-Carlson PCHIP, matching the
@@ -116,9 +115,6 @@ function localMidnight(now = new Date()) {
 }
 
 function daySunTimes(hass, sunEntityId) {
-  // Best-effort "today's sunrise / sunset in local time" from HA's sun.sun.
-  // sun.sun only exposes NEXT rising / setting; if the next one is tomorrow,
-  // we project the previous by subtracting 24 h.
   const midnight = localMidnight();
   const tomorrow = new Date(midnight.getTime() + 86400000);
   const sun = hass && hass.states && hass.states[sunEntityId];
@@ -145,6 +141,18 @@ function fmtHour(d, hass) {
   }
 }
 
+function fmtTimeShort(d, hass) {
+  try {
+    return d.toLocaleTimeString(hass && hass.locale && hass.locale.language, {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: !(hass && hass.locale && hass.locale.time_format === "24"),
+    });
+  } catch (_) {
+    return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+}
+
 
 // ---------- element ----------
 
@@ -158,10 +166,11 @@ class TidesPlusCard extends HTMLElement {
     this._loading = new Set();
     this._loaded = false;
     this._tickTimer = null;
+    this._perStation = [];
+    this._chartCtx = null;   // {tMin, tMax, x0, y0, chartW, chartH, heightMin, heightMax, unit}
   }
 
   connectedCallback() {
-    // Re-render every 60 s so the NOW line and the current-height dot advance.
     this._tickTimer = window.setInterval(() => this._render(), 60_000);
   }
 
@@ -241,7 +250,6 @@ class TidesPlusCard extends HTMLElement {
     const tMin = midnight.getTime();
     const tMax = dayEnd.getTime();
 
-    // Build per-station knot arrays inside the day + one anchor before/after.
     const perStation = [];
     let heightMin = Infinity;
     let heightMax = -Infinity;
@@ -258,7 +266,6 @@ class TidesPlusCard extends HTMLElement {
       const heights = s.knots.map((k) => convertHeight(k.height, unit));
       const derivs = pchipDerivatives(times, heights);
 
-      // Sample the curve every 5 minutes across the day for a smooth polyline.
       const samples = [];
       const step = 5 * 60 * 1000;
       for (let t = tMin; t <= tMax; t += step) {
@@ -267,7 +274,6 @@ class TidesPlusCard extends HTMLElement {
       }
       const currentY = interpolateAt(times, heights, derivs, Date.now());
 
-      // Knot markers that fall within [midnight, dayEnd].
       const dayKnots = s.knots
         .map((k, i) => ({
           t: new Date(k.time).getTime(),
@@ -286,12 +292,8 @@ class TidesPlusCard extends HTMLElement {
       }
 
       perStation.push({
-        id,
-        label,
-        color,
-        samples,
-        knots: dayKnots,
-        currentY,
+        id, label, color, samples, knots: dayKnots, currentY,
+        times, heights, derivs,
       });
     });
 
@@ -302,7 +304,6 @@ class TidesPlusCard extends HTMLElement {
       return;
     }
 
-    // Pad the y-range and clamp to sensible values.
     if (!isFinite(heightMin)) heightMin = 0;
     if (!isFinite(heightMax)) heightMax = 1;
     if (heightMin === heightMax) heightMax = heightMin + 1;
@@ -310,25 +311,20 @@ class TidesPlusCard extends HTMLElement {
     heightMin -= pad;
     heightMax += pad;
 
+    this._perStation = perStation;
+
     const svg = this._buildSvg({
-      hass,
-      unit,
-      perStation,
-      tMin,
-      tMax,
-      heightMin,
-      heightMax,
+      hass, unit, perStation, tMin, tMax, heightMin, heightMax,
       sunTimes: daySunTimes(hass, this._config.sun_entity),
       now: Date.now(),
     });
 
     const legend = perStation
-      .map(
-        (s) =>
-          `<span style="display:inline-flex;align-items:center;margin-right:12px;">
-             <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:6px;"></span>
-             ${s.label}${s.currentY != null ? " · " + s.currentY.toFixed(2) + " " + unitLabel(unit) : ""}
-           </span>`,
+      .map((s) =>
+        `<span style="display:inline-flex;align-items:center;margin-right:12px;">
+           <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:6px;"></span>
+           ${s.label}${s.currentY != null ? " · " + s.currentY.toFixed(2) + " " + unitLabel(unit) : ""}
+         </span>`,
       )
       .join("");
 
@@ -339,9 +335,21 @@ class TidesPlusCard extends HTMLElement {
 
     this.shadowRoot.innerHTML = this._shell(`
       <div style="padding: 8px 16px 4px; font-size: 13px; opacity: .85;">${dateStr}</div>
-      <div style="padding: 0 8px;">${svg}</div>
+      <div style="padding: 0 8px; position: relative;" id="tides-chart-wrap">
+        ${svg}
+        <div id="tides-tooltip" style="
+          position: absolute; pointer-events: none; display: none;
+          background: var(--card-background-color, #fff);
+          border: 1px solid rgba(0,0,0,0.15); border-radius: 6px;
+          padding: 6px 8px; font-size: 12px; line-height: 1.35;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.12); transform: translate(-50%, -100%);
+          white-space: nowrap; z-index: 2;
+        "></div>
+      </div>
       <div style="padding: 4px 16px 12px; font-size: 12px;">${legend}</div>
     `);
+
+    this._attachInteractivity();
   }
 
   _shell(inner) {
@@ -357,10 +365,11 @@ class TidesPlusCard extends HTMLElement {
     const x0 = PADDING.left;
     const y0 = PADDING.top;
 
+    this._chartCtx = { tMin, tMax, x0, y0, chartW, chartH, heightMin, heightMax, unit };
+
     const xOf = (t) => x0 + ((t - tMin) / (tMax - tMin)) * chartW;
     const yOf = (h) => y0 + (1 - (h - heightMin) / (heightMax - heightMin)) * chartH;
 
-    // Day/night shading — night is left of sunrise and right of sunset.
     let nightRects = "";
     if (sunTimes.sunrise) {
       const sx = xOf(sunTimes.sunrise.getTime());
@@ -371,7 +380,6 @@ class TidesPlusCard extends HTMLElement {
       nightRects += `<rect x="${sx}" y="${y0}" width="${Math.max(0, x0 + chartW - sx)}" height="${chartH}" fill="${NIGHT_FILL}" />`;
     }
 
-    // Hour grid + labels every 3 h.
     let grid = "";
     for (let hour = 0; hour <= 24; hour += 1) {
       const t = tMin + hour * 3600 * 1000;
@@ -384,7 +392,6 @@ class TidesPlusCard extends HTMLElement {
       }
     }
 
-    // Y ticks at ~4 divisions.
     let yTicks = "";
     const step = niceStep((heightMax - heightMin) / 4);
     const first = Math.ceil(heightMin / step) * step;
@@ -394,7 +401,6 @@ class TidesPlusCard extends HTMLElement {
       yTicks += `<text x="${x0 - 6}" y="${y + 3}" font-size="11" text-anchor="end" fill="var(--secondary-text-color, #666)">${h.toFixed(step < 1 ? 1 : 0)} ${unitLabel(unit)}</text>`;
     }
 
-    // Each station: filled area + line + knot dots + current point.
     let stationsSvg = "";
     for (const st of perStation) {
       if (!st.samples.length) continue;
@@ -419,7 +425,6 @@ class TidesPlusCard extends HTMLElement {
       }
     }
 
-    // NOW marker.
     let nowMark = "";
     if (now >= tMin && now <= tMax) {
       const nx = xOf(now);
@@ -427,16 +432,100 @@ class TidesPlusCard extends HTMLElement {
       nowMark += `<text x="${nx + 4}" y="${y0 + 12}" font-size="10" fill="${NOW_STROKE}" font-weight="600">NOW</text>`;
     }
 
+    // Interactive layer: crosshair + station dots, hidden until mousemove.
+    let cursorLayer = `<g id="tides-cursor" style="display:none; pointer-events:none;">`;
+    cursorLayer += `<line id="tides-crosshair" x1="0" y1="${y0}" x2="0" y2="${y0 + chartH}" stroke="rgba(0,0,0,0.35)" stroke-width="1" stroke-dasharray="3 3" />`;
+    for (const st of perStation) {
+      cursorLayer += `<circle data-station="${st.id}" r="4.5" fill="${st.color}" stroke="#fff" stroke-width="1.5" cx="0" cy="0" />`;
+    }
+    cursorLayer += `</g>`;
+
+    // Invisible hit rect so pointer events fire across the whole chart area.
+    const hit = `<rect id="tides-hit" x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="transparent" style="cursor: crosshair;" />`;
+
     return `
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="240" role="img" aria-label="Tide chart">
+      <svg id="tides-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="240" role="img" aria-label="Tide chart">
         <rect x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="var(--card-background-color, #fff)" />
         ${nightRects}
         ${yTicks}
         ${grid}
         ${stationsSvg}
         ${nowMark}
-        <rect x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="1" />
+        ${cursorLayer}
+        ${hit}
+        <rect x="${x0}" y="${y0}" width="${chartW}" height="${chartH}" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="1" pointer-events="none" />
       </svg>`;
+  }
+
+  _attachInteractivity() {
+    const svg = this.shadowRoot.getElementById("tides-svg");
+    if (!svg) return;
+    const hit = this.shadowRoot.getElementById("tides-hit");
+    if (!hit) return;
+
+    const onMove = (evt) => this._updateCursor(evt);
+    const onLeave = () => this._hideCursor();
+    hit.addEventListener("pointermove", onMove);
+    hit.addEventListener("pointerleave", onLeave);
+  }
+
+  _updateCursor(evt) {
+    const ctx = this._chartCtx;
+    if (!ctx) return;
+    const svg = this.shadowRoot.getElementById("tides-svg");
+    const cursor = this.shadowRoot.getElementById("tides-cursor");
+    const crosshair = this.shadowRoot.getElementById("tides-crosshair");
+    const tooltip = this.shadowRoot.getElementById("tides-tooltip");
+    const wrap = this.shadowRoot.getElementById("tides-chart-wrap");
+    if (!svg || !cursor || !crosshair || !tooltip || !wrap) return;
+
+    // Convert client X to SVG-viewBox X.
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    const svgP = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const xSvg = Math.max(ctx.x0, Math.min(ctx.x0 + ctx.chartW, svgP.x));
+
+    const t = ctx.tMin + ((xSvg - ctx.x0) / ctx.chartW) * (ctx.tMax - ctx.tMin);
+    crosshair.setAttribute("x1", xSvg);
+    crosshair.setAttribute("x2", xSvg);
+
+    const dots = cursor.querySelectorAll("circle[data-station]");
+    const lines = [`<div><strong>${fmtTimeShort(new Date(t), this._hass)}</strong></div>`];
+    for (const dot of dots) {
+      const stationId = dot.getAttribute("data-station");
+      const st = this._perStation.find((s) => s.id === stationId);
+      if (!st) { dot.setAttribute("cx", "-100"); continue; }
+      const y = interpolateAt(st.times, st.heights, st.derivs, t);
+      if (y == null) { dot.setAttribute("cx", "-100"); continue; }
+      const ySvg = ctx.y0 + (1 - (y - ctx.heightMin) / (ctx.heightMax - ctx.heightMin)) * ctx.chartH;
+      dot.setAttribute("cx", xSvg);
+      dot.setAttribute("cy", ySvg);
+      lines.push(
+        `<div style="display:flex;align-items:center;gap:6px;">
+           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${st.color};"></span>
+           <span>${st.label}: ${y.toFixed(2)} ${unitLabel(ctx.unit)}</span>
+         </div>`,
+      );
+    }
+    cursor.style.display = "";
+    tooltip.innerHTML = lines.join("");
+    tooltip.style.display = "";
+
+    // Position tooltip in wrap-relative CSS pixels.
+    const wrapRect = wrap.getBoundingClientRect();
+    const cssX = evt.clientX - wrapRect.left;
+    const cssYtop = 8;
+    tooltip.style.left = cssX + "px";
+    tooltip.style.top = cssYtop + "px";
+    tooltip.style.transform = "translate(-50%, 0)";
+  }
+
+  _hideCursor() {
+    const cursor = this.shadowRoot.getElementById("tides-cursor");
+    const tooltip = this.shadowRoot.getElementById("tides-tooltip");
+    if (cursor) cursor.style.display = "none";
+    if (tooltip) tooltip.style.display = "none";
   }
 }
 

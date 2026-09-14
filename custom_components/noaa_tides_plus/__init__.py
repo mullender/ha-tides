@@ -21,6 +21,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import NoaaTidesCoordinator, NoaaTidesEntry
+from .events import ExtremumEventScheduler
 from .helpers import format_device_name
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,6 +44,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:
     coordinator = NoaaTidesCoordinator(hass, station_id=station_id, datum=datum)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+
+    scheduler = ExtremumEventScheduler(hass, station_id, dict(entry.data))
+    scheduler.schedule(coordinator.data or [])
+    entry.async_on_unload(scheduler.clear)
+    entry.async_on_unload(
+        coordinator.async_add_listener(
+            lambda: scheduler.schedule(coordinator.data or [])
+        )
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

@@ -1,25 +1,33 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "Tides Plus (USA, NOAA)",
-        "description": "Enter a location to find nearby tide stations — a US ZIP code, a place name like \"Bridgeport, CT\", or a 7-digit NOAA station ID to skip the picker. Leave blank to use your Home Assistant home location.",
+      "provider": {
+        "title": "Tides Plus",
+        "description": "Which tide data source do you want to use? Pick the region that covers the station you want to add. Each provider fetches from its own public API — no accounts needed.",
+        "data": {
+          "provider": "Data source"
+        }
+      },
+      "search": {
+        "title": "Tides Plus — {provider}",
+        "description": "Enter a location to find nearby tide stations — a place name like \"Bridgeport, CT\" or \"Scheveningen\", a US ZIP code, or a native station ID to skip the picker. Leave blank to use your Home Assistant home location.",
         "data": {
           "query": "Location or station ID"
         }
       },
       "pick_station": {
         "title": "Pick a tide station",
-        "description": "Nearest NOAA tide stations to {query}.",
+        "description": "Nearest tide stations to {query}.",
         "data": {
           "station_id": "Station"
         }
       }
     },
     "error": {
-      "unknown_station": "That station ID was not found at NOAA.",
+      "unknown_station": "That station ID was not found at the selected data source.",
+      "unknown_provider": "That data source is not registered.",
       "not_tidal": "That station exists but does not publish tide predictions.",
-      "cannot_connect": "Failed to reach the NOAA API. Try again in a moment.",
+      "cannot_connect": "Failed to reach the tide data source. Try again in a moment.",
       "geocode_failed": "Could not find a place matching that search. Try a ZIP code or \"City, ST\".",
       "no_home_location": "Home Assistant has no home coordinates set. Enter a location or set your home in Settings → System → General."
     },

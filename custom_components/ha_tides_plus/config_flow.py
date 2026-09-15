@@ -9,6 +9,12 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import (
     CONF_PROVIDER,
@@ -29,6 +35,7 @@ from .providers import (
     StationNotTidal,
     UnknownStation,
     get_provider,
+    list_providers,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,15 +50,59 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        self._provider: Provider = get_provider(DEFAULT_PROVIDER)
+        self._provider: Provider | None = None
         self._candidates: list[tuple[Station, float]] = []
         self._search_label: str = ""
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Route to the provider picker or straight to search."""
+        providers = list_providers()
+        if len(providers) == 1:
+            self._provider = get_provider(providers[0][0])
+            return await self.async_step_search(user_input)
+        return await self.async_step_provider(user_input)
+
+    async def async_step_provider(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick which data source (NOAA, Rijkswaterstaat, …) to search."""
+        errors: dict[str, str] = {}
+        providers = list_providers()
+
+        if user_input is not None:
+            provider_id = user_input[CONF_PROVIDER]
+            try:
+                self._provider = get_provider(provider_id)
+            except KeyError:
+                errors["base"] = "unknown_provider"
+            else:
+                return await self.async_step_search()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PROVIDER, default=DEFAULT_PROVIDER): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=pid, label=label)
+                            for pid, label in providers
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(
+            step_id="provider", data_schema=schema, errors=errors
+        )
+
+    async def async_step_search(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Ask for a location or a direct station ID."""
         errors: dict[str, str] = {}
+        assert self._provider is not None, "provider must be picked before search"
 
         if user_input is not None:
             query = user_input.get(CONF_QUERY, "").strip()
@@ -71,7 +122,10 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema({vol.Optional(CONF_QUERY, default=""): str})
         return self.async_show_form(
-            step_id="user", data_schema=schema, errors=errors
+            step_id="search",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"provider": self._provider.label},
         )
 
     async def async_step_pick_station(
@@ -99,6 +153,7 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _prepare_candidates(self, query: str) -> None:
         """Resolve ``query`` to a lat/lng, then fill ``self._candidates``."""
+        assert self._provider is not None
         session = async_get_clientsession(self.hass)
 
         if not query:
@@ -129,6 +184,7 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _create_from_station_id(self, station_id: str) -> ConfigFlowResult:
         """Validate a station ID and either create the entry or raise _StepError."""
+        assert self._provider is not None
         session = async_get_clientsession(self.hass)
         try:
             station = await self._provider.get_station(session, station_id)
@@ -144,8 +200,6 @@ class NoaaTidesPlusConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Station IDs don't collide across providers (NOAA is 7-digit
         # numeric; RWS is short alphanumeric code), so no need to prefix.
-        # Keeps unique_id stable for the pre-provider-abstraction NOAA
-        # entries already in the field.
         await self.async_set_unique_id(station.id)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(

@@ -1,4 +1,4 @@
-"""Sensor entities for NOAA Tides Plus."""
+"""Sensor entities for Tides Plus."""
 
 from __future__ import annotations
 
@@ -15,9 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import DistanceConverter
 
-from .api import TideExtremum
 from .const import (
-    ATTRIBUTION,
     CONF_STATION_ID,
     CONF_STATION_NAME,
     CONF_STATION_STATE,
@@ -26,6 +24,7 @@ from .const import (
 from .coordinator import NoaaTidesCoordinator, NoaaTidesEntry
 from .helpers import format_device_name
 from .interpolation import compute_tide_state, interpolate_height
+from .providers import TideExtremum
 
 Kind = Literal["high", "low"]
 When = Literal["next", "previous"]
@@ -51,15 +50,14 @@ async def async_setup_entry(
     station_name: str | None = entry.data.get(CONF_STATION_NAME)
     station_state: str | None = entry.data.get(CONF_STATION_STATE)
 
+    provider = coordinator.provider
     device_name = format_device_name(station_id, station_name, station_state)
     device_info = DeviceInfo(
         identifiers={(DOMAIN, station_id)},
         name=device_name,
-        manufacturer="NOAA",
+        manufacturer=provider.manufacturer,
         model="Tide station",
-        configuration_url=(
-            f"https://tidesandcurrents.noaa.gov/stationhome.html?id={station_id}"
-        ),
+        configuration_url=provider.station_url(station_id),
     )
 
     entities: list[SensorEntity] = []
@@ -97,7 +95,7 @@ def _pick_extremum(
 
 
 class _NoaaTidesBase(CoordinatorEntity[NoaaTidesCoordinator], SensorEntity):
-    """Common bits for NOAA Tides Plus sensors.
+    """Common bits for Tides Plus sensors.
 
     Emits a state write every minute so ``native_value`` (which is
     evaluated against ``dt_util.utcnow()``) stays fresh between the
@@ -105,7 +103,10 @@ class _NoaaTidesBase(CoordinatorEntity[NoaaTidesCoordinator], SensorEntity):
     """
 
     _attr_has_entity_name = True
-    _attr_attribution = ATTRIBUTION
+
+    @property
+    def attribution(self) -> str:
+        return self.coordinator.provider.attribution
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

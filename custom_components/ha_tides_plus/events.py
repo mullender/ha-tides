@@ -13,8 +13,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
-from .api import TideExtremum
 from .const import CONF_STATION_NAME, CONF_STATION_STATE, DOMAIN
+from .providers import TideExtremum
 
 _LOGGER = logging.getLogger(__name__)
 

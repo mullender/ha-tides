@@ -12,7 +12,7 @@ from __future__ import annotations
 import bisect
 from datetime import datetime, timedelta
 
-from .api import TideExtremum
+from .providers import TideExtremum
 
 
 def _pchip_derivatives(x: list[float], y: list[float]) -> list[float]:

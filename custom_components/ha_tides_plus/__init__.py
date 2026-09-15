@@ -1,4 +1,4 @@
-"""NOAA Tides Plus integration."""
+"""Tides Plus integration."""
 
 from __future__ import annotations
 
@@ -13,20 +13,22 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
-from .api import ApiError, get_station
 from .const import (
     CONF_DATUM,
+    CONF_PROVIDER,
     CONF_STATION_ID,
     CONF_STATION_LAT,
     CONF_STATION_LNG,
     CONF_STATION_NAME,
     CONF_STATION_STATE,
     DEFAULT_DATUM,
+    DEFAULT_PROVIDER,
     DOMAIN,
 )
 from .coordinator import NoaaTidesCoordinator, NoaaTidesEntry
 from .events import ExtremumEventScheduler
 from .helpers import format_device_name
+from .providers import ApiError, Provider, get_provider
 from .websocket_api import async_register as async_register_ws
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,18 +61,26 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:
-    """Set up NOAA Tides Plus from a config entry."""
+    """Set up Tides Plus from a config entry."""
+    # Entries created before the provider abstraction (v0.1) carry no
+    # ``provider`` key; treat them as NOAA and persist that so future
+    # reads are straight lookups.
+    if CONF_PROVIDER not in entry.data:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_PROVIDER: DEFAULT_PROVIDER},
+        )
+
     station_id: str = entry.data[CONF_STATION_ID]
+    provider = _build_provider(entry)
 
     if CONF_STATION_NAME not in entry.data:
-        await _enrich_entry_with_station_metadata(hass, entry, station_id)
+        await _enrich_entry_with_station_metadata(hass, entry, provider, station_id)
 
     _sync_entry_title(hass, entry, station_id)
     _sync_device_name(hass, entry, station_id)
 
-    datum: str = entry.options.get(CONF_DATUM, DEFAULT_DATUM)
-
-    coordinator = NoaaTidesCoordinator(hass, station_id=station_id, datum=datum)
+    coordinator = NoaaTidesCoordinator(hass, provider=provider, station_id=station_id)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
@@ -90,6 +100,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: NoaaTidesEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _build_provider(entry: NoaaTidesEntry) -> Provider:
+    """Instantiate the provider named on this entry, with per-provider options."""
+    provider_id: str = entry.data.get(CONF_PROVIDER, DEFAULT_PROVIDER)
+    kwargs: dict[str, object] = {}
+    if provider_id == "noaa":
+        kwargs["datum"] = entry.options.get(CONF_DATUM, DEFAULT_DATUM)
+    return get_provider(provider_id, **kwargs)
 
 
 def _sync_entry_title(
@@ -130,14 +149,17 @@ def _sync_device_name(
 
 
 async def _enrich_entry_with_station_metadata(
-    hass: HomeAssistant, entry: NoaaTidesEntry, station_id: str
+    hass: HomeAssistant,
+    entry: NoaaTidesEntry,
+    provider: Provider,
+    station_id: str,
 ) -> None:
     """Backfill station name / state / coords for entries created before the
     config flow stored them. A failure here is not fatal — we just log and
     let the next setup retry.
     """
     try:
-        station = await get_station(async_get_clientsession(hass), station_id)
+        station = await provider.get_station(async_get_clientsession(hass), station_id)
     except ApiError as err:
         _LOGGER.debug("Skipping station-metadata backfill for %s: %s", station_id, err)
         return

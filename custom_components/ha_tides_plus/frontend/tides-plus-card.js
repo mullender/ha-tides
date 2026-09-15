@@ -27,6 +27,7 @@ const CARD_TAG = "tides-plus-card";
 const SUMMARY_TAG = "tides-plus-summary-card";
 
 const M_TO_FT = 3.28084;
+const DATA_REFRESH_INTERVAL = 30 * 60 * 1000;
 
 const STATION_COLORS = [
   "#1976d2",
@@ -122,6 +123,16 @@ function preferredUnit(hass, override) {
 
 const unitLabel = (unit) => (unit === "metric" ? "m" : "ft");
 const convertHeight = (m, unit) => (unit === "metric" ? m : m * M_TO_FT);
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
 
 function darkenHex(hex, amount) {
   const m = String(hex || "").replace("#", "").match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
@@ -253,8 +264,10 @@ class _TidesBase extends HTMLElement {
     this._hass = null;
     this._config = null;
     this._series = new Map();
-    this._loading = new Set();
-    this._loaded = false;
+    this._errors = new Map();
+    this._isLoading = false;
+    this._lastRefresh = 0;
+    this._loadGeneration = 0;
     this._tickTimer = null;
     this._windowOffset = 0;   // ms shift from the "current" anchor
   }
@@ -319,8 +332,8 @@ class _TidesBase extends HTMLElement {
                    style="${NAV_BTN_STYLE}">›</button>
          </span>`
       : "";
-    return `<div style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
-      <span>${label}</span>
+    return `<div class="tp-header" style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+      <span>${escapeHtml(label)}</span>
       ${nav}
     </div>`;
   }
@@ -354,7 +367,18 @@ class _TidesBase extends HTMLElement {
   }
 
   connectedCallback() {
-    this._tickTimer = window.setInterval(() => this._render(), 60_000);
+    if (!this._tickTimer) {
+      this._tickTimer = window.setInterval(() => {
+        if (
+          this._config?.stations?.length &&
+          Date.now() - this._lastRefresh >= DATA_REFRESH_INTERVAL
+        ) {
+          this._loadAll();
+        } else {
+          this._render();
+        }
+      }, 60_000);
+    }
     // Event delegation for nav buttons: attached to shadowRoot once so
     // re-renders can't stack duplicate handlers on the same DOM node.
     if (!this._navBound) {
@@ -364,6 +388,10 @@ class _TidesBase extends HTMLElement {
           (n) => n.nodeType === 1 && n.classList && n.classList.contains("tp-nav"),
         );
         if (!btn || btn.disabled) return;
+        if (btn.dataset.action === "retry") {
+          this._loadAll();
+          return;
+        }
         const nav = btn.dataset.nav;
         if (nav === "prev") this._shift(-1);
         else if (nav === "next") this._shift(1);
@@ -380,55 +408,110 @@ class _TidesBase extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config || !config.stations) {
+    if (!config || !Array.isArray(config.stations)) {
       throw new Error("`stations:` is required.");
     }
     this._config = this._defaultConfig(config);
     this._series = new Map();
-    this._loaded = false;
+    this._errors = new Map();
+    this._isLoading = false;
+    this._lastRefresh = 0;
+    this._loadGeneration += 1;
     this._render();
+    if (this._hass && this._config.stations.length) this._loadAll();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._loaded && this._config) {
-      this._loaded = true;
+    if (
+      this._config?.stations?.length &&
+      !this._isLoading &&
+      this._lastRefresh === 0
+    ) {
       this._loadAll();
     }
     this._render();
   }
 
   async _loadAll() {
-    await Promise.all(this._config.stations.map((id) => this._loadOne(id)));
+    if (!this._hass || !this._config?.stations?.length || this._isLoading) return;
+    const generation = this._loadGeneration;
+    this._isLoading = true;
+    this._render();
+    const results = await Promise.all(
+      this._config.stations.map((id) => this._loadOne(id)),
+    );
+    if (generation !== this._loadGeneration) return;
+    for (const result of results) {
+      if (result.error) {
+        this._errors.set(result.id, result.error);
+      } else {
+        this._series.set(result.id, result.data);
+        this._errors.delete(result.id);
+      }
+    }
+    this._lastRefresh = Date.now();
+    this._isLoading = false;
     this._render();
   }
 
   async _loadOne(id) {
-    if (this._loading.has(id)) return;
-    this._loading.add(id);
     try {
       const res = await this._hass.callWS({
         type: "ha_tides_plus/hilo_series",
         station_id: id,
       });
-      this._series.set(id, res);
+      return { id, data: res };
     } catch (err) {
-      this._series.set(id, {
-        error: (err && err.message) || String(err),
-        station_id: id,
-      });
-    } finally {
-      this._loading.delete(id);
+      return { id, error: (err && err.message) || String(err) };
     }
+  }
+
+  _dataStateHtml() {
+    const stations = this._config?.stations || [];
+    if (!stations.length) {
+      return shell(`
+        <div style="padding:20px 16px;">
+          <strong>No stations selected</strong>
+          <div style="margin-top:4px;color:var(--secondary-text-color);">
+            Edit this card and select at least one tide station.
+          </div>
+        </div>`);
+    }
+    const hasData = stations.some((id) => this._series.has(id));
+    if (hasData) return null;
+    if (this._isLoading || stations.some((id) => !this._errors.has(id))) {
+      return shell(`<div style="padding:16px;">Loading tide data…</div>`);
+    }
+    return shell(`
+      <div style="padding:20px 16px;" role="alert">
+        <strong>Could not load tide data</strong>
+        <div style="margin-top:4px;color:var(--secondary-text-color);">
+          Check the integration connection, then try again.
+        </div>
+        <div style="margin-top:4px;font-size:12px;color:var(--secondary-text-color);">
+          ${stations.map((id) => `${escapeHtml(id)}: ${escapeHtml(this._errors.get(id))}`).join("<br>")}
+        </div>
+        <button class="tp-nav" data-action="retry" style="margin-top:12px;${NAV_BTN_STYLE}">
+          Try again
+        </button>
+      </div>`);
+  }
+
+  _dataWarningHtml() {
+    if (!this._errors.size) return "";
+    const failed = Array.from(this._errors.keys()).map(escapeHtml).join(", ");
+    return `<div role="status" style="padding:8px 16px;background:var(--warning-color,#f57c00);color:var(--text-primary-color,#fff);font-size:12px;">
+      Could not refresh ${failed}. Showing available data.
+      <button class="tp-nav" data-action="retry" style="margin-left:8px;${NAV_BTN_STYLE}color:inherit;border-color:currentColor;min-height:32px;">Try again</button>
+    </div>`;
   }
 
   _prepare() {
     const hass = this._hass;
     const stations = this._config.stations;
     const unit = preferredUnit(hass, this._config.unit);
-    const anyLoaded = stations.some(
-      (id) => this._series.get(id) && !this._series.get(id).error,
-    );
+    const anyLoaded = stations.some((id) => this._series.has(id));
     if (!anyLoaded) return null;
 
     const { tMin, tMax } = this._computeWindow();
@@ -439,7 +522,7 @@ class _TidesBase extends HTMLElement {
 
     stations.forEach((id, idx) => {
       const s = this._series.get(id);
-      if (!s || s.error || !s.knots || !s.knots.length) return;
+      if (!s || !s.knots || !s.knots.length) return;
       const color = STATION_COLORS[idx % STATION_COLORS.length];
       const label = s.station_name
         ? `${s.station_name}${s.station_state ? ", " + s.station_state : ""}`
@@ -495,6 +578,7 @@ class _TidesBase extends HTMLElement {
     return {
       hass, unit, perStation, tMin, tMax, heightMin, heightMax,
       hasSamplesInWindow,
+      failedStations: stations.filter((id) => this._errors.has(id)),
       nightRects: sunNightRects(hass, this._config.sun_entity, tMin, tMax),
       now: Date.now(),
     };
@@ -572,9 +656,16 @@ class TidesPlusCard extends _TidesBase {
 
   _render() {
     if (!this._config) return;
+    const stateHtml = this._dataStateHtml();
+    if (stateHtml) {
+      this.shadowRoot.innerHTML = stateHtml;
+      this._renderer = null;
+      this._destroyApex();
+      return;
+    }
     const ctx = this._prepare();
     if (!ctx) {
-      this.shadowRoot.innerHTML = shell(`<div style="padding:16px;">Loading tide data…</div>`);
+      this.shadowRoot.innerHTML = shell(`<div style="padding:16px;">No tide predictions are available.</div>`);
       this._renderer = null;
       this._destroyApex();
       return;
@@ -583,6 +674,7 @@ class TidesPlusCard extends _TidesBase {
     if (!ctx.hasSamplesInWindow) {
       const canReset = this._windowOffset !== 0;
       this.shadowRoot.innerHTML = shell(`
+        ${this._dataWarningHtml()}
         ${this._navHeader(ctx)}
         <div style="padding:24px 16px; text-align:center;">
           <div style="opacity:.7;">No cached tide predictions for this range.</div>
@@ -605,12 +697,12 @@ class TidesPlusCard extends _TidesBase {
   _legendHtml(ctx) {
     const blocks = ctx.perStation
       .map(
-        (s) => `
-        <div class="station" data-station="${s.id}"
+        (s, index) => `
+        <div class="station" data-station-index="${index}"
              style="padding:6px 16px;font-size:13px;line-height:1.5;">
           <div style="display:flex;align-items:center;margin-bottom:2px;">
             <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
-            <strong>${s.label}</strong>
+            <strong>${escapeHtml(s.label)}</strong>
           </div>
           <div class="current" style="opacity:.9;margin-left:18px;font-size:12px;"></div>
         </div>`,
@@ -625,8 +717,8 @@ class TidesPlusCard extends _TidesBase {
     const u = unitLabel((this._chartCtx || {}).unit || preferredUnit(this._hass, this._config.unit));
     const at = cursorTime != null ? cursorTime : Date.now();
     const hovering = cursorTime != null;
-    for (const st of this._perStation) {
-      const el = root.querySelector(`.station[data-station="${st.id}"] .current`);
+    for (const [index, st] of this._perStation.entries()) {
+      const el = root.querySelector(`.station[data-station-index="${index}"] .current`);
       if (!el) continue;
       const y = interpolateAt(st.times, st.heights, st.derivs, at);
       if (y == null) { el.textContent = "· —"; continue; }
@@ -663,6 +755,7 @@ class TidesPlusCard extends _TidesBase {
   async _renderApex(ctx) {
     if (!this.shadowRoot.getElementById("tides-apex-wrap")) {
       this.shadowRoot.innerHTML = shell(`
+        <div id="tides-warning-slot">${this._dataWarningHtml()}</div>
         ${this._navHeader(ctx)}
         <div id="tides-apex-wrap" style="padding: 0 8px;">
           <div id="tides-apex-chart"></div>
@@ -671,7 +764,9 @@ class TidesPlusCard extends _TidesBase {
       `);
     }
     // Refresh header + legend on every render (they may have new data).
-    const headerEl = this.shadowRoot.querySelector("ha-card > div");
+    const warningSlot = this.shadowRoot.getElementById("tides-warning-slot");
+    if (warningSlot) warningSlot.innerHTML = this._dataWarningHtml();
+    const headerEl = this.shadowRoot.querySelector(".tp-header");
     if (headerEl) headerEl.outerHTML = this._navHeader(ctx, "ApexCharts");
     const slot = this.shadowRoot.getElementById("tides-apex-legend-slot");
     if (slot) slot.outerHTML = `<div id="tides-apex-legend-slot">${this._legendHtml(ctx)}</div>`;
@@ -680,7 +775,7 @@ class TidesPlusCard extends _TidesBase {
       await ensureApexLoaded();
     } catch (err) {
       this.shadowRoot.innerHTML = shell(
-        `<div style="padding:16px;">Failed to load ApexCharts: ${err.message}</div>`,
+        `<div style="padding:16px;" role="alert">Failed to load ApexCharts: ${escapeHtml(err.message)}</div>`,
       );
       return;
     }
@@ -935,9 +1030,28 @@ class TidesPlusSummaryCard extends _TidesBase {
 
   _render() {
     if (!this._config) return;
+    const stateHtml = this._dataStateHtml();
+    if (stateHtml) {
+      this.shadowRoot.innerHTML = stateHtml;
+      return;
+    }
     const ctx = this._prepare();
     if (!ctx) {
-      this.shadowRoot.innerHTML = shell(`<div style="padding:16px;">Loading tide data…</div>`);
+      this.shadowRoot.innerHTML = shell(`<div style="padding:16px;">No tide predictions are available.</div>`);
+      return;
+    }
+
+    if (!ctx.hasSamplesInWindow) {
+      const canReset = this._windowOffset !== 0;
+      this.shadowRoot.innerHTML = shell(`
+        ${this._dataWarningHtml()}
+        ${this._navHeader(ctx)}
+        <div style="padding:24px 16px;text-align:center;">
+          <div style="color:var(--secondary-text-color);">No cached tide predictions for this range.</div>
+          ${canReset ? `<button class="tp-nav" data-nav="reset" style="margin-top:12px;${NAV_BTN_STYLE}">Back to ${this._config.anchor === "now" ? "now" : "today"}</button>` : ""}
+        </div>
+      `);
+      this._attachNavHandlers();
       return;
     }
 
@@ -954,7 +1068,7 @@ class TidesPlusSummaryCard extends _TidesBase {
         <div style="padding: 10px 16px 12px; border-top: 1px solid rgba(0,0,0,0.06);">
           <div style="display:flex;align-items:center;margin-bottom:6px;">
             <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
-            <span style="font-size:14px;"><strong>${s.label}</strong></span>
+            <span style="font-size:14px;"><strong>${escapeHtml(s.label)}</strong></span>
             ${swingHtml}
           </div>
           ${chronologicalTable(s, ctx, u, hass)}
@@ -962,6 +1076,7 @@ class TidesPlusSummaryCard extends _TidesBase {
     }).join("");
 
     this.shadowRoot.innerHTML = shell(`
+      ${this._dataWarningHtml()}
       ${this._navHeader(ctx)}
       ${stationsHtml}
     `);
@@ -1090,7 +1205,10 @@ class _EditorBase extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { ...config };
+    this._config = {
+      ...config,
+      stations: Array.isArray(config.stations) ? config.stations.map(String) : [],
+    };
     this._render();
   }
 
@@ -1120,7 +1238,7 @@ class _EditorBase extends HTMLElement {
   }
 
   _stationPickerHtml() {
-    const selected = this._config.stations || [];
+    const selected = (this._config.stations || []).map(String);
     if (!this._stations || !this._stations.length) {
       return `<div class="field">
         <label>Stations</label>
@@ -1128,14 +1246,15 @@ class _EditorBase extends HTMLElement {
       </div>`;
     }
     const items = this._stations.map((s) => {
-      const checked = selected.includes(s.station_id) ? "checked" : "";
+      const stationId = String(s.station_id);
+      const checked = selected.includes(stationId) ? "checked" : "";
       const label = s.station_name
         ? `${s.station_name}${s.station_state ? ", " + s.station_state : ""}`
         : s.title || s.station_id;
       return `<label class="station-item">
-        <input type="checkbox" value="${s.station_id}" ${checked} data-field="stations">
-        <span class="station-name">${label}</span>
-        <span class="station-id">${s.station_id}</span>
+        <input type="checkbox" value="${escapeHtml(stationId)}" ${checked} data-field="stations">
+        <span class="station-name">${escapeHtml(label)}</span>
+        <span class="station-id">${escapeHtml(stationId)}</span>
       </label>`;
     }).join("");
     return `<div class="field">

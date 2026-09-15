@@ -51,7 +51,14 @@ def ws_hilo_series(
             msg["id"], "not_found", f"No configured station {msg[CONF_STATION_ID]}"
         )
         return
-    coordinator: NoaaTidesCoordinator = entry.runtime_data
+    coordinator: NoaaTidesCoordinator | None = getattr(entry, "runtime_data", None)
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "not_ready",
+            f"Station {msg[CONF_STATION_ID]} is still starting",
+        )
+        return
     knots = coordinator.data or []
     connection.send_result(
         msg["id"],

@@ -1,4 +1,4 @@
-# v0.2.0 — First tagged release
+# v0.3.0 — Reliable dashboard cards
 
 Home Assistant custom integration for tide predictions from multiple
 public data sources.

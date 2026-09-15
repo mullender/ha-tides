@@ -31,18 +31,67 @@ See:
 
 ## Install
 
-Not yet in the HACS default list. Add as a **custom repository**:
+Not yet in the HACS default list — install as a **HACS custom
+repository**.
 
-1. HACS → three-dot menu → *Custom repositories*.
-2. URL: `https://github.com/mullender/ha-tides`, category *Integration*.
-3. Install, restart HA, then **Settings → Devices & Services → Add
-   Integration** and search *Tides Plus*.
-4. Pick a data source (NOAA or Rijkswaterstaat), then type a location
-   or a native station ID — a US ZIP code, a place name like
-   `Bridgeport, CT` or `Scheveningen`, or a station ID (`9445882` for
-   NOAA, `scheveningen` for RWS) to skip the picker. Leave the field
-   blank to use your HA-home coordinates. Pick a station from the
-   list; the entry (with 10 sensors) is created.
+### Prerequisite
+
+[HACS](https://hacs.xyz/) itself must be installed and set up in your
+Home Assistant. If it isn't yet, follow the
+[HACS install guide](https://hacs.xyz/docs/use/download/download/)
+first.
+
+### 1. Add the repository to HACS
+
+**One-click** (opens HACS on your HA instance at the right dialog):
+
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mullender&repository=ha-tides&category=integration)
+
+**Manual fallback**:
+
+1. HACS → three-dot menu (top right) → **Custom repositories**.
+2. Repository: `https://github.com/mullender/ha-tides`
+3. Type: **Integration**
+4. Click **Add**.
+
+### 2. Download the integration
+
+- In the HACS *Integrations* list, find **Tides Plus** (it appears at
+  the top once you close the custom-repositories dialog).
+- Click **Download**, then **Download** again in the version dialog.
+- **Restart Home Assistant** (Settings → System → Restart) so the new
+  integration is loaded.
+
+### 3. Add a station
+
+**One-click**:
+
+[![Add integration to your Home Assistant instance](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=ha_tides_plus)
+
+**Manual fallback**: Settings → **Devices & Services** → **Add
+Integration** → search *Tides Plus*.
+
+Then:
+
+1. Pick a data source — **NOAA** for US stations, **Rijkswaterstaat**
+   for NL stations. The picker only shows when more than one provider
+   is registered.
+2. Enter a location or a station ID:
+   - A place name — `Bridgeport, CT`, `Scheveningen`, `Half Moon Bay`.
+   - A US ZIP code — `95019`.
+   - A native station ID to skip the picker — `9445882` (NOAA
+     7-digit), `scheveningen` (RWS slug).
+   - Leave blank to use your HA-home coordinates.
+3. Pick a station from the nearest-20 list. The entry (with 10
+   sensors, bus events, and a device) is created immediately.
+
+Repeat step 3 for each additional station — US and NL stations can
+live side by side in the same install.
+
+### Updating
+
+HACS notifies you when a new release is tagged. Click **Update** in the
+HACS integration list, then restart Home Assistant.
 
 ## Cards
 

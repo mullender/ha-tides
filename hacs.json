@@ -1,5 +1,6 @@
 {
   "name": "Tides Plus",
   "homeassistant": "2025.1.0",
-  "content_in_root": false
+  "content_in_root": false,
+  "country": ["NL", "US"]
 }

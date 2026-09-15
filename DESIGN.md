@@ -220,8 +220,9 @@ Two custom elements, both auto-injected via
   Config: `stations`, `anchor` (`day` | `now`), `hours_before`,
   `hours_after`, `buttons` (`forward-backward` | `none`), `sun_entity`,
   `unit`. Renders a PCHIP curve with day/night shading, discrete knot
-  markers, permanent H/L labels, a live crosshair legend showing hovered
-  height + prev/next H/L, and a `‹ Today ›` nav header.
+  markers, width-aware H/L labels, a live crosshair legend showing
+  hovered height + prev/next H/L, keyboard inspection, and a
+  `‹ Today ›` nav header.
 - `custom:tides-plus-summary-card` — tabular chronological breakdown of
   today's H/L with a slotted-in "now" row, direction icons, and swing.
 
@@ -229,6 +230,11 @@ Both share `_TidesBase` for hass wiring, data fetch, and nav. Both
 implement `getGridOptions()` and the legacy `getLayoutOptions()` so
 Sections dashboards default to full-width, automatic-height placement.
 Users can override these values with `grid_options` in YAML.
+
+The cards refresh their WebSocket data every 30 minutes. They preserve
+the last good station data when a partial refresh fails and show the
+failure with a retry action. External station text is escaped before it
+enters card or editor markup.
 
 ## 11. Blueprints
 

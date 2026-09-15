@@ -134,6 +134,10 @@ stations: [9445882]
 Both cards include a visual editor — click the pencil icon on any card
 to configure it without writing YAML.
 
+The cards follow the active light or dark theme. Chart labels adapt to
+the available width, and the chart supports keyboard inspection with
+the left and right arrow keys. Tide data refreshes every 30 minutes.
+
 <p align="center">
   <img src="docs/screenshots/card-editor.png" alt="Tides Plus visual card editor" width="600">
 </p>

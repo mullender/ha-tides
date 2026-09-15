@@ -30,8 +30,8 @@ public data sources.
 - **Bundled Lovelace cards** with visual editors (auto-loaded, no
   extra HACS-frontend install):
   - `custom:tides-plus-card` — ApexCharts curve with day/night
-    shading, permanent H/L labels, live crosshair legend,
-    `‹ Today ›` nav.
+    shading, responsive H/L labels, keyboard inspection, live crosshair
+    legend, and `‹ Today ›` navigation.
   - `custom:tides-plus-summary-card` — chronological H/L table with a
     slotted-in "now" row.
   - Both cards ship a **visual editor** (pencil icon on the card) so
@@ -39,6 +39,8 @@ public data sources.
     writing YAML.
   - Both cards honour Home Assistant's **`grid_options`** so they can
     live side-by-side in Sections dashboards.
+  - Both cards use automatic height, follow light and dark themes, show
+    clear loading and error states, and refresh data every 30 minutes.
 - **One starter automation blueprint** — `tide_extreme_alert.yaml`
   (device picker, direction switch, threshold, sun-aware daylight,
   template-friendly notification).

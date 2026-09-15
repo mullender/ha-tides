@@ -912,9 +912,10 @@ class TidesPlusCard extends _TidesBase {
     const { unit, perStation, tMin, tMax, heightMin, heightMax, nightRects: nightRectData, now, hass } = ctx;
     const chartWidth = this.shadowRoot.getElementById("tides-apex-wrap")
       ?.getBoundingClientRect().width || this.getBoundingClientRect().width || 600;
-    const darkMode = Boolean(
-      hass?.themes?.darkMode || window.matchMedia?.("(prefers-color-scheme: dark)").matches,
-    );
+    const configuredDarkMode = hass?.themes?.darkMode;
+    const darkMode = typeof configuredDarkMode === "boolean"
+      ? configuredDarkMode
+      : Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
     const primaryTextColor = themeValue(
       this,
       "--primary-text-color",

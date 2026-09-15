@@ -1268,19 +1268,44 @@ class TidesPlusSummaryCardEditor extends _EditorBase {
 
 const CHART_EDITOR_TAG = "tides-plus-card-editor";
 const SUMMARY_EDITOR_TAG = "tides-plus-summary-card-editor";
-if (!customElements.get(CHART_EDITOR_TAG)) customElements.define(CHART_EDITOR_TAG, TidesPlusCardEditor);
-if (!customElements.get(SUMMARY_EDITOR_TAG)) customElements.define(SUMMARY_EDITOR_TAG, TidesPlusSummaryCardEditor);
 
 
 // ---------- registration ----------
 
-// Defensive define: HA can end up importing the module more than once
-// (auto-injected extra_module_url plus a manual dev import, or a second
-// registration on hot reload). Skip re-registering to avoid a
-// "already been used" DOMException, which otherwise turns every card on
-// the page into a "Configuration error".
-if (!customElements.get(CARD_TAG)) customElements.define(CARD_TAG, TidesPlusCard);
-if (!customElements.get(SUMMARY_TAG)) customElements.define(SUMMARY_TAG, TidesPlusSummaryCard);
+const CARD_ELEMENTS = [
+  [CHART_EDITOR_TAG, TidesPlusCardEditor],
+  [SUMMARY_EDITOR_TAG, TidesPlusSummaryCardEditor],
+  [CARD_TAG, TidesPlusCard],
+  [SUMMARY_TAG, TidesPlusSummaryCard],
+];
+
+function registerCardElements() {
+  for (const [tag, constructor] of CARD_ELEMENTS) {
+    if (!customElements.get(tag)) customElements.define(tag, constructor);
+  }
+}
+
+let registeredElementRegistry = window.customElements;
+registerCardElements();
+
+// HA can replace the global registry while its frontend starts. This can
+// happen after an early cached extra module registers its elements. Watch
+// only during startup and copy the definitions into the final registry.
+if (!customElements.get("home-assistant")) {
+  const registryWatchDeadline = performance.now() + 10_000;
+  const registryWatch = window.setInterval(() => {
+    if (window.customElements !== registeredElementRegistry) {
+      registeredElementRegistry = window.customElements;
+      registerCardElements();
+    }
+    if (
+      customElements.get("home-assistant") ||
+      performance.now() >= registryWatchDeadline
+    ) {
+      window.clearInterval(registryWatch);
+    }
+  }, 0);
+}
 
 window.customCards = window.customCards || [];
 for (const [tag, name, desc] of [

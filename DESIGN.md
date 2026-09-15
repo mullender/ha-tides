@@ -225,7 +225,9 @@ Two custom elements, both auto-injected via
 - `custom:tides-plus-summary-card` — tabular chronological breakdown of
   today's H/L with a slotted-in "now" row, direction icons, and swing.
 
-Both share `_TidesBase` for hass wiring, data fetch, and nav.
+Both share `_TidesBase` for hass wiring, data fetch, and nav. Both
+implement `getLayoutOptions()` so Sections dashboards default to
+full-width placement; users can override with `grid_options` in YAML.
 
 ## 11. Blueprints
 

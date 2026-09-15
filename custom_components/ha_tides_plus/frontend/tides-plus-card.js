@@ -378,8 +378,8 @@ class _TidesBase extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config || !config.stations || !config.stations.length) {
-      throw new Error("`stations:` must list at least one NOAA station ID.");
+    if (!config || !config.stations) {
+      throw new Error("`stations:` is required.");
     }
     this._config = this._defaultConfig(config);
     this._series = new Map();
@@ -529,7 +529,30 @@ class TidesPlusCard extends _TidesBase {
     super.setConfig(config);
   }
 
+  static getConfigElement() {
+    return document.createElement("tides-plus-card-editor");
+  }
+
+  static async getStubConfig(hass) {
+    try {
+      const res = await hass.callWS({ type: "ha_tides_plus/list_stations" });
+      if (res.stations && res.stations.length) {
+        return { stations: [res.stations[0].station_id] };
+      }
+    } catch (_) {}
+    return { stations: [] };
+  }
+
   getCardSize() { return 4; }
+
+  getLayoutOptions() {
+    return {
+      grid_columns: "full",
+      grid_rows: 4,
+      grid_min_columns: 2,
+      grid_min_rows: 3,
+    };
+  }
 
   _onShift() {
     // Force full rebuild so the apex axis + annotations refresh.
@@ -863,7 +886,30 @@ class TidesPlusSummaryCard extends _TidesBase {
     };
   }
 
+  static getConfigElement() {
+    return document.createElement("tides-plus-summary-card-editor");
+  }
+
+  static async getStubConfig(hass) {
+    try {
+      const res = await hass.callWS({ type: "ha_tides_plus/list_stations" });
+      if (res.stations && res.stations.length) {
+        return { stations: [res.stations[0].station_id] };
+      }
+    } catch (_) {}
+    return { stations: [] };
+  }
+
   getCardSize() { return 2; }
+
+  getLayoutOptions() {
+    return {
+      grid_columns: "full",
+      grid_rows: "auto",
+      grid_min_columns: 2,
+      grid_min_rows: 2,
+    };
+  }
 
   _render() {
     if (!this._config) return;
@@ -969,6 +1015,259 @@ function chronologicalTable(station, ctx, unit, hass) {
     <tbody>${rows}</tbody>
   </table>`;
 }
+
+
+// ---------- Card editors ----------
+
+const EDITOR_STYLE = `
+  :host { display: block; }
+  .editor { padding: 16px; }
+  .field { margin-bottom: 16px; }
+  .field > label {
+    display: block; font-weight: 500; font-size: 13px;
+    margin-bottom: 6px; color: var(--primary-text-color, #333);
+  }
+  .field > select, .field > input {
+    width: 100%; padding: 8px; border-radius: 4px;
+    border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color, inherit);
+    font-size: 14px; box-sizing: border-box;
+  }
+  .field > select:focus, .field > input:focus {
+    outline: none;
+    border-color: var(--primary-color, #03a9f4);
+  }
+  .station-list { display: flex; flex-direction: column; gap: 4px; }
+  .station-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 4px; cursor: pointer;
+  }
+  .station-item:hover {
+    background: var(--secondary-background-color, rgba(0,0,0,0.04));
+  }
+  .station-item input[type="checkbox"] {
+    width: 16px; height: 16px; margin: 0; cursor: pointer;
+  }
+  .station-name { font-size: 14px; }
+  .station-id { font-size: 12px; opacity: .6; margin-left: 4px; }
+  .no-stations {
+    font-size: 13px; opacity: .6; padding: 8px 0;
+  }
+  .row { display: flex; gap: 12px; }
+  .row > .field { flex: 1; }
+`;
+
+class _EditorBase extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = {};
+    this._hass = null;
+    this._stations = null;
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._stations) this._loadStations();
+  }
+
+  async _loadStations() {
+    try {
+      const res = await this._hass.callWS({ type: "ha_tides_plus/list_stations" });
+      this._stations = res.stations || [];
+    } catch (_) {
+      this._stations = [];
+    }
+    this._render();
+  }
+
+  _fireChanged() {
+    const cfg = { ...this._config };
+    // Strip keys that equal their defaults so the YAML stays clean.
+    this.dispatchEvent(new CustomEvent("config-changed", {
+      detail: { config: cfg },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  _stationPickerHtml() {
+    const selected = this._config.stations || [];
+    if (!this._stations || !this._stations.length) {
+      return `<div class="field">
+        <label>Stations</label>
+        <div class="no-stations">No stations configured yet. Add one via Settings → Devices & Services → Tides Plus.</div>
+      </div>`;
+    }
+    const items = this._stations.map((s) => {
+      const checked = selected.includes(s.station_id) ? "checked" : "";
+      const label = s.station_name
+        ? `${s.station_name}${s.station_state ? ", " + s.station_state : ""}`
+        : s.title || s.station_id;
+      return `<label class="station-item">
+        <input type="checkbox" value="${s.station_id}" ${checked} data-field="stations">
+        <span class="station-name">${label}</span>
+        <span class="station-id">${s.station_id}</span>
+      </label>`;
+    }).join("");
+    return `<div class="field">
+      <label>Stations</label>
+      <div class="station-list">${items}</div>
+    </div>`;
+  }
+
+  _unitPickerHtml() {
+    const v = this._config.unit || "";
+    return `<div class="field">
+      <label>Unit</label>
+      <select data-field="unit">
+        <option value=""${v === "" ? " selected" : ""}>System default</option>
+        <option value="metric"${v === "metric" ? " selected" : ""}>Metric (m)</option>
+        <option value="imperial"${v === "imperial" ? " selected" : ""}>Imperial (ft)</option>
+      </select>
+    </div>`;
+  }
+
+  _chartFieldsHtml() {
+    const cfg = this._config;
+    const anchor = cfg.anchor || "day";
+    const buttons = cfg.buttons || "forward-backward";
+    const sunEntity = cfg.sun_entity || "sun.sun";
+    const hoursBefore = cfg.hours_before ?? 0;
+    const hoursAfter = cfg.hours_after ?? 24;
+
+    return `
+      <div class="field">
+        <label>Anchor</label>
+        <select data-field="anchor">
+          <option value="day"${anchor === "day" ? " selected" : ""}>Day (midnight to midnight)</option>
+          <option value="now"${anchor === "now" ? " selected" : ""}>Now (rolling window)</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label>Hours before</label>
+          <input type="number" data-field="hours_before" value="${hoursBefore}" min="0" max="168" step="1">
+        </div>
+        <div class="field">
+          <label>Hours after</label>
+          <input type="number" data-field="hours_after" value="${hoursAfter}" min="1" max="168" step="1">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Navigation buttons</label>
+        <select data-field="buttons">
+          <option value="forward-backward"${buttons === "forward-backward" ? " selected" : ""}>Forward / backward</option>
+          <option value="none"${buttons === "none" ? " selected" : ""}>None</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <ha-entity-picker
+          id="sun-entity-picker"
+          label="Sun entity (for day/night shading)"
+          data-field="sun_entity"
+        ></ha-entity-picker>
+      </div>`;
+  }
+
+  _attachListeners() {
+    const root = this.shadowRoot;
+    root.querySelectorAll("select[data-field]").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const field = e.target.dataset.field;
+        const val = e.target.value;
+        if (val === "") {
+          delete this._config[field];
+        } else {
+          this._config[field] = val;
+        }
+        this._fireChanged();
+      });
+    });
+    root.querySelectorAll("input[type=number][data-field]").forEach((el) => {
+      el.addEventListener("change", (e) => {
+        const field = e.target.dataset.field;
+        this._config[field] = Number(e.target.value);
+        this._fireChanged();
+      });
+    });
+    root.querySelectorAll("input[type=checkbox][data-field=stations]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const checked = Array.from(
+          root.querySelectorAll("input[type=checkbox][data-field=stations]:checked"),
+        ).map((cb) => cb.value);
+        this._config.stations = checked;
+        this._fireChanged();
+      });
+    });
+
+    const picker = root.getElementById("sun-entity-picker");
+    if (picker) {
+      picker.hass = this._hass;
+      picker.value = this._config.sun_entity || "sun.sun";
+      picker.includeDomains = ["sun"];
+      picker.addEventListener("value-changed", (e) => {
+        const val = e.detail.value;
+        if (val) {
+          this._config.sun_entity = val;
+        } else {
+          delete this._config.sun_entity;
+        }
+        this._fireChanged();
+      });
+    }
+  }
+}
+
+
+class TidesPlusCardEditor extends _EditorBase {
+  _render() {
+    if (!this._stations) {
+      this.shadowRoot.innerHTML = `<style>${EDITOR_STYLE}</style>
+        <div class="editor">Loading stations…</div>`;
+      return;
+    }
+    this.shadowRoot.innerHTML = `<style>${EDITOR_STYLE}</style>
+      <div class="editor">
+        ${this._stationPickerHtml()}
+        ${this._chartFieldsHtml()}
+        ${this._unitPickerHtml()}
+      </div>`;
+    this._attachListeners();
+  }
+}
+
+
+class TidesPlusSummaryCardEditor extends _EditorBase {
+  _render() {
+    if (!this._stations) {
+      this.shadowRoot.innerHTML = `<style>${EDITOR_STYLE}</style>
+        <div class="editor">Loading stations…</div>`;
+      return;
+    }
+    this.shadowRoot.innerHTML = `<style>${EDITOR_STYLE}</style>
+      <div class="editor">
+        ${this._stationPickerHtml()}
+        ${this._chartFieldsHtml()}
+        ${this._unitPickerHtml()}
+      </div>`;
+    this._attachListeners();
+  }
+}
+
+const CHART_EDITOR_TAG = "tides-plus-card-editor";
+const SUMMARY_EDITOR_TAG = "tides-plus-summary-card-editor";
+if (!customElements.get(CHART_EDITOR_TAG)) customElements.define(CHART_EDITOR_TAG, TidesPlusCardEditor);
+if (!customElements.get(SUMMARY_EDITOR_TAG)) customElements.define(SUMMARY_EDITOR_TAG, TidesPlusSummaryCardEditor);
 
 
 // ---------- registration ----------

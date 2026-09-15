@@ -131,6 +131,36 @@ type: custom:tides-plus-summary-card
 stations: [9445882]
 ```
 
+Both cards include a visual editor — click the pencil icon on any card
+to configure it without writing YAML.
+
+<p align="center">
+  <img src="docs/screenshots/card-editor.png" alt="Tides Plus visual card editor" width="600">
+</p>
+
+### Layout options
+
+Both cards support Home Assistant's `grid_options` for controlling size
+in **Sections** dashboards. By default the chart card spans full width;
+override with any combination of:
+
+```yaml
+type: custom:tides-plus-card
+stations: [9445882]
+grid_options:
+  columns: full        # "full" or 1-4  (default: full)
+  rows: 4              # grid rows      (default: 4 for chart, auto for summary)
+```
+
+| Option | Values | Chart default | Summary default |
+|---|---|---|---|
+| `columns` | `1`–`4` or `full` | `full` | `full` |
+| `rows` | positive integer or `auto` | `4` | `auto` |
+
+`grid_options` is a standard Home Assistant feature — see the HA
+[dashboard cards documentation](https://www.home-assistant.io/dashboards/cards/#grid_options)
+for the full set of keys (`min_columns`, `min_rows`, etc.).
+
 ## Blueprints
 
 Bundled under `blueprints/automation/ha_tides_plus/`. Install via

@@ -286,6 +286,7 @@ class _TidesBase extends HTMLElement {
     this._isLoading = false;
     this._lastRefresh = 0;
     this._loadGeneration = 0;
+    this._hassRenderSignature = null;
     this._tickTimer = null;
     this._retryTimer = null;
     this._retryCount = 0;
@@ -482,7 +483,21 @@ class _TidesBase extends HTMLElement {
   }
 
   set hass(hass) {
+    const sunEntityId = this._config?.sun_entity || "sun.sun";
+    const sun = hass?.states?.[sunEntityId];
+    const renderSignature = JSON.stringify([
+      hass?.config?.unit_system?.length,
+      hass?.locale?.language,
+      hass?.locale?.time_format,
+      hass?.themes?.theme,
+      hass?.themes?.darkMode,
+      sun?.state,
+      sun?.attributes?.next_rising,
+      sun?.attributes?.next_setting,
+    ]);
+    const shouldRender = renderSignature !== this._hassRenderSignature;
     this._hass = hass;
+    this._hassRenderSignature = renderSignature;
     if (
       this._config?.stations?.length &&
       !this._isLoading &&
@@ -490,7 +505,7 @@ class _TidesBase extends HTMLElement {
     ) {
       this._loadAll();
     }
-    this._render();
+    if (shouldRender) this._render();
   }
 
   async _loadAll() {

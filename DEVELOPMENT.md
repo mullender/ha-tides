@@ -368,7 +368,7 @@ Attribution string: `"Data provided by Rijkswaterstaat"`, exposed via
 | Debugger will not attach | `debugpy` port not exposed | Confirm `5678` in `docker-compose.yml` ports and in `configuration.yaml`. |
 | Config flow does not appear | Cached HA UI | Hard-refresh browser; clear service worker. |
 | Reload does not pick up changes | Change touched `manifest.json` or config flow | Restart the container. |
-| Card renders as "Configuration error" | Stale JS in browser cache OR `customElements.define` collided with a hot-reloaded module | Enable *Disable cache* in DevTools → Network; the code already guards `define` with a `customElements.get()` check. |
+| Card renders as "Configuration error" | The browser still has an older frontend page or module | Restart Home Assistant and reload twice. Current releases version both frontend assets and restore card definitions if Home Assistant replaces its custom-element registry. |
 | Chart hover does not update the legend | ApexCharts `chart.events.mouseMove` fires only with a valid `dataPointIndex` — we use `tooltip.custom` instead and return an empty tooltip. If broken, verify the config still has that block. |
 | `station_id does not exist` on setup | Wrong ID or non-prediction station | Verify via the `stations.json` metadata URL. |
 | Docker socket errors after Docker Desktop uninstall | Stale `~/.docker/config.json` credential store | `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` (Colima) or remove the `credsStore` key from `config.json`. |

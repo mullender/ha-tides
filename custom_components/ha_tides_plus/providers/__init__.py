@@ -19,9 +19,11 @@ from .base import (
     UnknownStation,
 )
 from .noaa import NoaaProvider
+from .rws import RwsProvider
 
 _REGISTRY: dict[str, type[Provider]] = {
     NoaaProvider.id: NoaaProvider,
+    RwsProvider.id: RwsProvider,
 }
 
 
@@ -48,6 +50,7 @@ __all__ = [
     "ApiError",
     "NoaaProvider",
     "Provider",
+    "RwsProvider",
     "Station",
     "StationNotTidal",
     "TideExtremum",

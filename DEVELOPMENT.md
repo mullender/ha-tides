@@ -5,12 +5,17 @@ How to build, run, and debug the `ha_tides_plus` custom integration.
 ## 1. Prerequisites
 
 - macOS 13+ or Linux.
-- Python 3.13. Match the version that current Home Assistant Core ships
-  with. Check the HA `pyproject.toml` if in doubt.
-- Docker Desktop, OrbStack, or Colima.
+- Docker Desktop, OrbStack, or Colima. (Colima is what this repo has
+  been developed on; see the `docker context ls` hint in section 11 if
+  you already have Docker Desktop configured.)
+- Node.js 20+ (only needed if you drive Chrome through the `rodney`
+  CLI or the Meta `browser` CLI for UI testing — see section 8).
 - VS Code with the "Python" and "Dev Containers" extensions.
 - `git` and a GitHub account.
-- Optional: `uv` or `pipx` for a faster local Python setup.
+
+Python is not needed on the host — the HA container ships Python 3.14
+and Pillow, which is enough for running the code and re-rendering the
+brand icon.
 
 ## 2. Repository layout
 
@@ -18,47 +23,42 @@ How to build, run, and debug the `ha_tides_plus` custom integration.
 ha_tides/
   custom_components/
     ha_tides_plus/
-      __init__.py
+      __init__.py               # async_setup + async_setup_entry, WS + card registration
       manifest.json
-      config_flow.py
+      config_flow.py            # station picker: ZIP / place / direct-ID + list_tide_stations
       const.py
-      coordinator.py
-      sensor.py
-      interpolation.py         # PCHIP + state machine
+      coordinator.py            # DataUpdateCoordinator, ±7-day cache, 12h refresh
+      api.py                    # NOAA client (get_station, list_tide_stations, get_hilo_predictions)
+      geocode.py                # zippopotam.us + Nominatim
+      helpers.py                # format_device_name, haversine_km
+      interpolation.py          # PCHIP + tide_state derivation
+      sensor.py                 # 10 sensors per station + extrema attribute
+      events.py                 # ExtremumEventScheduler (bus events)
+      websocket_api.py          # ha_tides_plus/hilo_series, /list_stations
       strings.json
-      translations/
-        en.json
-  tests/
-    conftest.py
-    fixtures/
-      hilo_bridgeport_7d.json
-    test_coordinator.py
-    test_interpolation.py
-    test_sensor.py
-  .devcontainer/
-    devcontainer.json
-    Dockerfile
-  .vscode/
-    launch.json
-    settings.json
-  ha_config/                    # gitignored; per-dev HA config
+      translations/en.json
+      brand/                    # icon.png + @2x + logo + dark variants (HA 2026.3+)
+      frontend/
+        tides-plus-card.js      # chart + summary cards, PCHIP JS port
+        apexcharts.min.js       # bundled charting library
+  blueprints/automation/ha_tides_plus/
+    tide_extreme_alert.yaml
+  brands/                       # design source (SVG + PIL renderer)
+  ha_config/                    # gitignored; per-dev HA config + storage
   docker-compose.yml
   hacs.json
-  pyproject.toml
-  requirements_test.txt
-  README.md
-  DESIGN.md
-  DEVELOPMENT.md
+  README.md · DESIGN.md · DEVELOPMENT.md · IDEAS.md
 ```
 
-`ha_config/` holds the running HA config. Keep it out of git. Put a
-`.gitignore` entry for it.
+`ha_config/` is gitignored; it holds the running HA config (auth,
+lovelace, blueprints, storage). Seeded on first boot from
+`configuration.yaml`.
 
 ## 3. Fast path: HA in Docker with the component mounted
 
-This is the primary loop. HA runs in a container. The custom component
-lives on the host and is mounted read-write into the container. Code
-changes take effect after an integration reload; no rebuild needed.
+Primary loop: HA runs in a container, the custom component and blueprint
+directories are bind-mounted from the host, so most code changes take
+effect on integration reload without a container restart.
 
 `docker-compose.yml`:
 
@@ -86,38 +86,28 @@ docker compose up -d
 docker compose logs -f homeassistant
 ```
 
-Open `http://localhost:8123`. Create the first user. Go to
-Settings → Devices & Services → Add Integration → search "NOAA Tides
-Plus".
+Open <http://localhost:8123>, complete first-user onboarding, then
+**Settings → Devices & Services → Add Integration → *Tides Plus (USA,
+NOAA)***. Empty query uses your HA-home coords; type a ZIP, place, or
+7-digit station ID to pick specifically.
 
-Reload the integration after code changes:
+## 4. Reload cadence
 
-- UI: Settings → Devices & Services → the entry → "..." → Reload.
-- CLI (faster for iterative work):
+- **Sensor or coordinator code change** — Settings → Devices & Services
+  → the entry → "..." → *Reload*. No container restart.
+- **`manifest.json`, `config_flow.py`, or new entities** —
+  `docker compose restart homeassistant`.
+- **Frontend (`frontend/*.js`)** — hard-refresh the browser
+  (Cmd/Ctrl-Shift-R). Chrome DevTools with *Disable cache* on the
+  Network tab is a huge time saver; without it the SPA holds onto the
+  cached module.
+- **Blueprint YAML** — `Developer tools → Services → automation.reload`,
+  or use the UI's blueprint import re-run.
 
-```
-docker exec ha_dev hass --script check_config -c /config
-```
+## 5. Debugging with VS Code
 
-For changes to `manifest.json`, `config_flow.py`, or new entities,
-restart the container:
-
-```
-docker compose restart homeassistant
-```
-
-## 4. Debugging with VS Code
-
-Enable the `debugpy` integration in `ha_config/configuration.yaml`:
-
-```yaml
-debugpy:
-  wait: false
-  port: 5678
-  host: 0.0.0.0
-```
-
-Restart HA once for the change to take effect.
+`configuration.yaml` in `ha_config/` seeds `debugpy` on 5678 and debug
+logging on the integration. Attach from VS Code:
 
 `.vscode/launch.json`:
 
@@ -143,15 +133,11 @@ Restart HA once for the change to take effect.
 }
 ```
 
-Set breakpoints in `custom_components/ha_tides_plus/*.py`. Attach the
-debugger. Trigger the code path by reloading the integration or waiting
-for the coordinator refresh. Set `wait: true` in the `debugpy` config if
-you need to catch startup code.
+`justMyCode: false` lets you step into HA core. Set `wait: true` in the
+`debugpy` config in `configuration.yaml` if you need to catch startup
+code.
 
-`justMyCode: false` lets you step into HA core code, which is useful when
-tracking down coordinator or config-flow behaviour.
-
-## 5. Logging
+## 6. Logging
 
 `ha_config/configuration.yaml`:
 
@@ -162,33 +148,56 @@ logger:
     custom_components.ha_tides_plus: debug
 ```
 
-Tail:
+Tail: `docker compose logs -f homeassistant`. Filter:
+`docker compose logs -f homeassistant | grep ha_tides_plus`.
 
-```
-docker compose logs -f homeassistant
-```
+## 7. Frontend / card development
 
-For a shorter feedback loop, `grep` for the integration domain:
+The two custom elements (`tides-plus-card`, `tides-plus-summary-card`)
+are hand-written vanilla JS — no build step. Edit
+`custom_components/ha_tides_plus/frontend/tides-plus-card.js` and
+hard-refresh the browser.
 
-```
-docker compose logs -f homeassistant | grep ha_tides_plus
-```
+- ApexCharts is bundled at
+  `custom_components/ha_tides_plus/frontend/apexcharts.min.js` and
+  loaded on demand the first time a chart card renders. Updating the
+  version means dropping in a new file from jsdelivr:
 
-## 6. Devcontainer alternative (heavier)
+  ```
+  curl -sL https://cdn.jsdelivr.net/npm/apexcharts@<version>/dist/apexcharts.min.js \
+    -o custom_components/ha_tides_plus/frontend/apexcharts.min.js
+  ```
 
-Use this only if you need to step into HA core sources or modify HA core.
+- Card and summary auto-load via `add_extra_js_url` in `async_setup`.
+  No HACS-frontend install is needed on the user side.
 
-- Clone `https://github.com/home-assistant/core` next to `ha_tides`.
-- Open `core/` in VS Code. Reopen in devcontainer.
-- Bind-mount `ha_tides/custom_components/ha_tides_plus` into
-  `core/config/custom_components/ha_tides_plus`.
-- Start HA from the devcontainer task list: `Run Home Assistant Core`.
+- The card element carries an `_updateLegend(cursorTime)` method that
+  the ApexCharts `tooltip.custom` callback fires on every plot-area
+  hover; the built-in apex tooltip is disabled so nothing covers the
+  graph.
 
-Trade-off: larger image, slower boot, but full source access.
+## 8. Driving the running HA from the CLI
 
-## 7. Unit tests
+Two CLIs used during dev to inspect the browser state without leaving
+the terminal:
 
-`requirements_test.txt`:
+- `rodney` — connect to an existing Chrome session on
+  `localhost:9222` and drive it. Useful for `rodney js '(fn)()'` to run
+  JS in the frontend context (e.g. querying `hass.states`, calling
+  `hass.callWS`, or clicking through a dashboard). Chrome must be
+  launched with `--remote-debugging-port=9222` and Rodney called with
+  `rodney connect localhost:9222` once per session.
+- Meta `browser` CLI — heavier, works over CDP too. Rodney has been the
+  more reliable of the two during development.
+
+`docker exec ha_dev python3 -c '…'` is the fast way to run HA-context
+Python — importing `homeassistant.util.yaml.loader.load_yaml` to
+parse-check blueprint YAMLs, or importing the integration modules
+directly and hitting the mdapi.
+
+## 9. Testing (not shipped yet)
+
+Planned:
 
 ```
 pytest
@@ -199,81 +208,52 @@ respx
 numpy
 ```
 
-Local venv (no Docker needed for tests):
-
-```
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements_test.txt
-pytest tests/ -v
-```
-
-Test guidelines:
+Guidelines when the suite lands:
 
 - Never hit the live NOAA API in tests. Save JSON responses under
-  `tests/fixtures/`. Use `respx` or the `aioclient_mock` fixture to
-  intercept HTTP calls.
+  `tests/fixtures/`.
 - Freeze time with `freezegun` for extremum-scheduling tests.
-- Assert on the coordinator's public state, not on internal attributes.
+- Assert on the coordinator's public state and on the WebSocket API
+  responses, not on internal attributes.
 
-## 8. Linting and formatting
+## 10. HACS metadata
 
-Match HA core conventions:
-
-```
-pip install ruff mypy
-ruff check custom_components/ tests/
-ruff format custom_components/ tests/
-mypy custom_components/ha_tides_plus
-```
-
-Add a pre-commit hook if you want automatic runs on `git commit`.
-
-## 9. HACS distribution
-
-`hacs.json` at the repo root:
+`hacs.json` at repo root:
 
 ```json
 {
-  "name": "NOAA Tides Plus",
+  "name": "Tides Plus (USA, NOAA)",
   "render_readme": true,
   "homeassistant": "2025.1.0",
   "content_in_root": false
 }
 ```
 
-`manifest.json` (`custom_components/ha_tides_plus/manifest.json`):
+`manifest.json` inside `custom_components/ha_tides_plus/` declares
+`domain`, `version`, `codeowners`, `config_flow: true`,
+`iot_class: cloud_polling`, and no external requirements.
 
-```json
-{
-  "domain": "ha_tides_plus",
-  "name": "NOAA Tides Plus",
-  "version": "0.1.0",
-  "codeowners": ["@mullender"],
-  "config_flow": true,
-  "documentation": "https://github.com/mullender/ha_tides",
-  "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/mullender/ha_tides/issues",
-  "requirements": []
-}
-```
+Publish path:
 
-Publish:
+1. Tag a release: `git tag v0.x.0 && git push --tags`.
+2. HA users install via HACS → *Custom repositories* → paste
+   `https://github.com/mullender/ha-tides`, category *Integration*.
 
-- Push the repo to GitHub, public.
-- Tag a release: `git tag v0.1.0 && git push --tags`.
-- In HA: HACS → Integrations → three-dot menu → Custom repositories →
-  paste the repo URL, category "Integration".
-- Install → Restart HA → add via Settings → Devices & Services.
+## 11. NOAA API notes
 
-## 10. NOAA API notes
+- Base URL:
+  `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
+- No API key. Every call must set `application=ha_tides_plus` per NOAA
+  attribution guidance.
+- Rate limits are unpublished. One call per 12 h per station is well
+  under any reasonable limit.
+- Reference stations set `tidal: true`; subordinate stations don't set
+  that field but carry `type: "S"` and a `reference_id`. Both types
+  return usable predictions.
+- Time zone: we always request `time_zone=gmt` and parse to UTC-aware
+  datetimes; HA converts to the user's zone on display.
 
-- Base URL: `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
-- No API key. Set `application=ha_tides_plus` on every call — NOAA asks
-  for this for traffic attribution.
-- Rate limits are not published. One call per 12 h per station is well
-  under any reasonable limit. Back off with exponential retry on HTTP 5xx.
-- Sample hi/lo call for testing:
+Sample:
 
 ```
 https://api.tidesandcurrents.noaa.gov/api/prod/datagetter
@@ -283,42 +263,23 @@ https://api.tidesandcurrents.noaa.gov/api/prod/datagetter
   &range=168
   &datum=MLLW
   &station=8467150
-  &time_zone=lst_ldt
+  &time_zone=gmt
   &units=metric
   &format=json
   &interval=hilo
 ```
 
-- Station metadata:
+Attribution string: `"Data provided by NOAA"`, set via
+`_attr_attribution` on every entity.
 
-```
-https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions
-```
-
-Attribution string: `"Data provided by NOAA"`. Set
-`_attr_attribution` on each entity.
-
-## 11. Common issues
+## 12. Common issues
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Debugger will not attach | `debugpy` port not exposed | Confirm `5678` in `docker-compose.yml` ports and in `configuration.yaml`. |
 | Config flow does not appear | Cached HA UI | Hard-refresh browser; clear service worker. |
 | Reload does not pick up changes | Change touched `manifest.json` or config flow | Restart the container. |
+| Card renders as "Configuration error" | Stale JS in browser cache OR `customElements.define` collided with a hot-reloaded module | Enable *Disable cache* in DevTools → Network; the code already guards `define` with a `customElements.get()` check. |
+| Chart hover does not update the legend | ApexCharts `chart.events.mouseMove` fires only with a valid `dataPointIndex` — we use `tooltip.custom` instead and return an empty tooltip. If broken, verify the config still has that block. |
 | `station_id does not exist` on setup | Wrong ID or non-prediction station | Verify via the `stations.json` metadata URL. |
-| Times off by hours in the UI | Wrong `TZ` env in Docker | Set `TZ` in `docker-compose.yml` to your local zone. |
-
-## 12. Suggested first commits
-
-1. Skeleton: `manifest.json`, `__init__.py`, empty `config_flow.py`,
-   registration only.
-2. Config flow with station validation against `stations.json`.
-3. Coordinator with hi/lo fetch and 12 h refresh; log the parsed series.
-4. `sensor.next_high_tide` and `sensor.next_low_tide` as timestamp
-   sensors, plus their height siblings.
-5. PCHIP interpolation module and `sensor.tide_height`.
-6. State machine and `sensor.tide_state`.
-7. Extremum events on the bus.
-8. Options flow for units, interval, and hold window.
-9. Test fixtures and unit tests.
-10. README, HACS metadata, first tag.
+| Docker socket errors after Docker Desktop uninstall | Stale `~/.docker/config.json` credential store | `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` (Colima) or remove the `credsStore` key from `config.json`. |

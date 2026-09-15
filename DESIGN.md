@@ -1,24 +1,29 @@
-# NOAA Tides Plus — Design
+# Tides Plus — Design
 
-Home Assistant custom integration for NOAA tide predictions. Replaces the
-minimal legacy `noaa_tides` integration with numeric sensors, timestamp
-sensors, events, and a rising/falling state derived from hi/lo data.
+Home Assistant custom integration for NOAA CO-OPS tide predictions.
+Ships in the `ha_tides_plus` domain. The legacy core `noaa_tides`
+integration is untouched; both can run side by side.
 
 ## 1. Goals
 
-- Numeric tide-height sensor, updated once per minute, for graphs and templates.
-- Timestamp sensors for the next high tide and next low tide, usable in
-  standard `time` triggers.
-- Ebb/flood state derived from hi/lo data without a second API call.
-- Events fired on the bus at each high tide and low tide, for `event` triggers.
-- Config flow. No YAML.
-- Cover every NOAA CO-OPS tide-prediction station in the US.
+- Numeric current-height sensor, interpolated between the NOAA
+  hi/lo predictions with zero slope at each peak.
+- Timestamp sensors for the next and previous high / low tide, usable
+  in standard `time` triggers.
+- Rising / falling / high / low state, derived from the hi/lo series
+  without a second API call.
+- Bus events fired at every extremum, for `event` triggers.
+- Config flow with a station picker (ZIP, place name, or direct ID).
+- Bundled dashboard cards (chart + summary) and automation blueprints.
+- Cover every NOAA CO-OPS tide-prediction station in the US
+  (reference + subordinate).
 
 ## 2. Non-goals (v1)
 
-- Slack water and true current direction. These need `currents_predictions`
-  and a separate current-station list. Defer to v2.
-- Non-US sources (SHOM, Rijkswaterstaat, UKHO). Defer.
+- Slack water and true current direction — need `currents_predictions`
+  and a separate current-station list. Deferred to v2.
+- Non-US providers (SHOM, Rijkswaterstaat, UKHO). Deferred; the
+  card / summary / coordinator machinery is provider-agnostic in shape.
 - Historical observations. Predictions only.
 - Sea-surface temperature, wind, and other CO-OPS products.
 
@@ -26,152 +31,176 @@ sensors, events, and a rising/falling state derived from hi/lo data.
 
 - Base URL: `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
 - Product: `predictions`
-- Datum: `MLLW` (default; expose as an option)
-- Interval: `hilo` by default. Option to switch to `6` (6-minute) for a
-  higher-fidelity curve.
-- No API key. Set `application=ha_tides_plus` per NOAA guidance.
+- Interval: `hilo` — one point per extremum, ~4 per day per station.
+- Datum: `MLLW` (hard-coded default; options flow will expose it).
+- Time zone: `gmt` — always UTC in and out; HA displays in the user zone.
+- No API key. Every call sets `application=ha_tides_plus` per NOAA
+  guidance.
 - Station metadata:
-  `https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions`
-
-Assumption to verify: every station that supports `interval=hilo` also
-supports `interval=6` and `interval=h`. Both intervals come from the same
-harmonic constituents, so coverage should be identical. Confirm against
-the station list before shipping.
+  `https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/<id>.json?expand=details,products`
+  (per-station) and
+  `.../stations.json?type=tidepredictions` (whole catalogue, used by the
+  nearest-station picker).
 
 ## 4. Architecture
 
-One `ConfigEntry` per station. One `DataUpdateCoordinator` per entry.
+One `ConfigEntry` per station, one `DataUpdateCoordinator` per entry.
 
 Coordinator refresh:
 
-- Fetch `hilo` predictions for the next 7 days. Refresh every 12 h.
-- If `interval=6` is enabled, fetch 6-minute predictions for the next 48 h.
-  Refresh every 6 h.
-- On failure, keep the last good dataset. Fail the entry only if the cache
-  no longer covers `now()`.
+- Interval: 12 h.
+- Window: `LOOKBACK_HOURS = 168` back + `LOOKAHEAD_HOURS = 168` forward
+  (±7 days). NOAA accepts up to 31 days per fetch; 14 days is well under.
+- On failure, the last good series is kept. The entry fails only if the
+  cache no longer covers `now()`.
 
-Sensors read from the coordinator cache. Sensors do not call the API.
+Sensors and events read exclusively from the coordinator cache. The API
+is only touched by the coordinator (refresh) and the config flow
+(validation + station lookup).
+
+The chart and summary cards read `coordinator.data` through a small
+WebSocket command (`ha_tides_plus/hilo_series`, `ha_tides_plus/list_stations`)
+so they do not have to walk the recorder history.
 
 ## 5. Interpolation
 
-Given the hi/lo sequence `(t_i, h_i)`:
+The hi/lo series `(t_i, h_i)` alternates highs and lows, so every
+interior knot is a local extremum. Standard Fritsch-Carlson PCHIP sets
+the derivative at such a knot to 0 to preserve segment monotonicity —
+exactly the "flat at the peak" shape a tide chart needs.
 
-- Use PCHIP (Piecewise Cubic Hermite) between adjacent knots.
-- Adjacent knots alternate between highs and lows, so each knot is a local
-  extremum. Standard PCHIP sets the derivative at each such knot to 0 to
-  preserve segment monotonicity. This gives the exact shape the user wants:
-  smooth, monotone between extrema, zero slope at every peak.
-- Implement in pure `numpy`. Do not add a `scipy` dependency for ~30 lines
-  of math.
-
-When `interval=6` is enabled, use the raw 6-minute series and interpolate
-linearly between the two nearest samples for the current-height value.
+- Python implementation lives in `interpolation.py` — pure `numpy`, no
+  `scipy` dependency for ~30 lines of math.
+- The same PCHIP is ported to JS inside `frontend/tides-plus-card.js`,
+  so the client-side curve matches the sensor value byte for byte.
 
 ## 6. Entity model (per config entry)
 
+Ten entities per station:
+
 | Entity | Type | Purpose |
 |---|---|---|
-| `sensor.<name>_tide_height` | numeric (`m` or `ft`) | Interpolated current height. Updates every 60 s. |
-| `sensor.<name>_tide_state` | enum: `rising`, `falling`, `high`, `low` | Direction, plus a hold window around each extremum. |
-| `sensor.<name>_next_high_tide` | `device_class: timestamp` | ISO datetime of next high. |
-| `sensor.<name>_next_low_tide` | `device_class: timestamp` | ISO datetime of next low. |
-| `sensor.<name>_next_high_height` | numeric | Height of next high. |
-| `sensor.<name>_next_low_height` | numeric | Height of next low. |
+| `sensor.<name>_tide_height` | distance (m native, HA converts) | PCHIP-interpolated current height. Updates every 60 s. Carries an `extrema` attribute (full cached hi/lo list in the sensor's display unit) and a `unit` attribute. |
+| `sensor.<name>_tide_state` | enum: `rising` / `falling` / `high` / `low` | Direction plus a 10 min hold around each extremum. |
+| `sensor.<name>_next_high_tide` | timestamp | ISO datetime of the next H. |
+| `sensor.<name>_next_low_tide` | timestamp | ISO datetime of the next L. |
+| `sensor.<name>_next_high_tide_height` | distance | Height of the next H. |
+| `sensor.<name>_next_low_tide_height` | distance | Height of the next L. |
+| `sensor.<name>_previous_high_tide` | timestamp | ISO datetime of the most recent H. |
+| `sensor.<name>_previous_low_tide` | timestamp | ISO datetime of the most recent L. |
+| `sensor.<name>_previous_high_tide_height` | distance | Height of the most recent H. |
+| `sensor.<name>_previous_low_tide_height` | distance | Height of the most recent L. |
 
-All entities share one `DeviceInfo` per station (station ID, name, coords).
+All ten share one `DeviceInfo` per station (identifier `(DOMAIN,
+station_id)`, name `<id>: <station_name>, <state>`, coords, NOAA URL).
 
 ## 7. Ebb / flood state machine
 
 For each pair of adjacent knots `(t_a, h_a) -> (t_b, h_b)`:
 
-- If `h_b > h_a`, state during the segment is `rising` (flooding).
-- If `h_b < h_a`, state during the segment is `falling` (ebbing).
+- If `h_b > h_a`, the state during the segment is `rising` (flooding).
+- If `h_b < h_a`, the state during the segment is `falling` (ebbing).
 
-Around each extremum, hold `high` or `low` for `+/- W` minutes, where `W`
-is a config option (default 10 min).
-
-State updates are scheduled with `async_track_point_in_time` at each
-transition. No polling loop.
+Around each extremum, the state holds at `high` or `low` for `± W`
+minutes; `W` is 10 min today (will be exposed by the options flow).
 
 ## 8. Events
 
-Fire on the HA event bus:
+Fired on the HA event bus at each extremum knot time:
 
-- `ha_tides_plus_high_tide` at each high-tide knot.
-- `ha_tides_plus_low_tide` at each low-tide knot.
+- `ha_tides_plus_high_tide`
+- `ha_tides_plus_low_tide`
 
 Payload:
 
 ```json
 {
-  "station_id": "8467150",
-  "station_name": "Bridgeport, CT",
-  "height": 3.12,
-  "unit": "m",
-  "next_high": "2026-09-12T04:15:00-04:00",
-  "next_low": "2026-09-11T22:03:00-04:00"
+  "station_id": "9445882",
+  "station_name": "Eagle Harbor, Bainbridge Island",
+  "station_state": "WA",
+  "time": "2026-09-15T09:11:00+00:00",
+  "height": 0.066,
+  "unit": "m"
 }
 ```
 
-Users can trigger on the event, or on the `next_*_tide` timestamp sensor.
-Both work; events are lower-latency.
+Events are scheduled with `async_track_point_in_time` on each coordinator
+refresh and cancelled on unload. Users trigger on the event (lowest
+latency) or on the `next_*_tide` timestamp sensors (survive an HA
+restart).
 
 ## 9. Config flow
 
-Step 1 — station:
+Step 1 — search:
 
-- Text input for station ID.
-- Link to `https://tidesandcurrents.noaa.gov/tide_predictions.html`.
-- Validate by fetching station metadata. Reject if the station does not
-  support tide predictions.
-- Show name and coordinates for confirmation.
+- One text input. Interpreted as:
+  - empty → `hass.config.latitude` / `longitude`.
+  - 5 digits → US ZIP; resolved via `api.zippopotam.us`.
+  - 7 digits → direct NOAA station ID (skips step 2).
+  - anything else → geocoded via OpenStreetMap Nominatim.
+- If not a direct ID, HA fetches the full ~3500-station catalogue and
+  haversine-ranks against the resolved lat/lng.
 
-Options flow:
+Step 2 — pick station:
 
-- Units: `metric` / `imperial`. Default follows HA config.
-- Interpolation source: `hilo` (default) or `6min`.
-- Extremum hold window in minutes (default 10).
-- Datum (default `MLLW`).
+- Dropdown of the nearest 20 stations, labelled
+  `"<Name>, <ST> — <km> km (station: <id>)"`.
+- On submit, the station is validated via the mdapi (reference *or*
+  subordinate stations both accepted) and the entry is created with
+  station name, state, and coordinates persisted in `entry.data`.
 
-## 10. Testing
+Options flow: not shipped yet. Planned inputs: `datum`,
+`hold_window_minutes`, `unit` override.
 
-- Unit tests for PCHIP against known analytical curves. Assert derivative
-  is 0 at each knot.
-- Unit tests for the state-machine transitions with `freeze_time`.
+## 10. Cards
+
+Two custom elements, both auto-injected via
+`add_extra_js_url` / `async_register_static_paths`:
+
+- `custom:tides-plus-card` — day-long tide chart, ApexCharts renderer.
+  Config: `stations`, `anchor` (`day` | `now`), `hours_before`,
+  `hours_after`, `buttons` (`forward-backward` | `none`), `sun_entity`,
+  `unit`. Renders a PCHIP curve with day/night shading, discrete knot
+  markers, permanent H/L labels, a live crosshair legend showing hovered
+  height + prev/next H/L, and a `‹ Today ›` nav header.
+- `custom:tides-plus-summary-card` — tabular chronological breakdown of
+  today's H/L with a slotted-in "now" row, direction icons, and swing.
+
+Both share `_TidesBase` for hass wiring, data fetch, and nav.
+
+## 11. Blueprints
+
+Bundled under `blueprints/automation/ha_tides_plus/`. Currently one:
+
+- `tide_extreme_alert.yaml` — daily check at a user-chosen local time
+  for the first upcoming H or L within a lookahead window that meets a
+  threshold; optional sun-aware daylight filter; template-friendly
+  title / message / notification data with a default deep-link URL to
+  the station device.
+
+Users install via Settings → Blueprints → Import blueprint with the
+raw GitHub URL.
+
+## 12. Testing
+
+Not shipped yet. Planned suite:
+
+- Unit tests for PCHIP against known analytical curves. Assert
+  derivative is 0 at each knot.
+- Unit tests for the state-machine transitions with `freezegun`.
 - Unit tests for event scheduling.
-- Coordinator tests with saved CO-OPS JSON fixtures. No live API calls in
-  CI.
+- Coordinator tests with saved CO-OPS JSON fixtures. No live API calls
+  in CI.
 - End-to-end tests with `pytest-homeassistant-custom-component`.
 
-## 11. Distribution
+## 13. Distribution
 
-Recommendation: ship first as a HACS custom component under a new domain,
-`ha_tides_plus`.
+Shipped as a HACS custom component under `ha_tides_plus`. Install
+instructions in `README.md`.
 
-- Fast iteration. No HA core review cycle.
-- The user installs via HACS → Custom repositories.
-- Once the design is stable, propose an upstream rewrite of the existing
-  `noaa_tides` domain, with a migration path from the legacy YAML sensor.
+Future:
 
-Trade-off: two domains coexist for a while. Users who move from the legacy
-integration re-add their station in the new one. Acceptable given the
-legacy integration has a single text sensor and few users.
-
-Backwards compatibility with the legacy `noaa_tides` entities is
-explicitly out of scope for v1. Both integrations can run side-by-side.
-The compat shim (YAML import via `SOURCE_IMPORT`, preserved
-`unique_id = "<station>_summary"`, preserved state-string format and
-attribute names) is deferred to the eventual upstream PR against
-`homeassistant/core`, where it is load-bearing for review acceptance.
-
-## 12. Open questions
-
-- Confirm `interval=6` coverage matches `interval=hilo` at all stations.
-- Do subordinate stations return usable `interval=6` data, or only
-  reference-station corrections? Test on 2-3 subordinate stations.
-- Attribution wording required by NOAA. Reuse the legacy string
-  `"Data provided by NOAA"`.
-- Do we expose a `tide_curve` attribute (the next 48 h as a list of
-  points) for card use, or leave graphing to the recorder? Attribute is
-  handy but bloats the state machine. Leaning toward: no attribute; use
-  a template sensor or a Lovelace card that samples the height sensor.
+- HACS default-list submission once the API surface is stable.
+- Upstream rewrite of `homeassistant/core`'s `noaa_tides` with a
+  compat shim preserving the legacy `unique_id = "<station>_summary"`
+  and text-state format.

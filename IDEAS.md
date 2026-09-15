@@ -1,37 +1,109 @@
-Post-MVP ideas
+# Post-MVP ideas
 
-Setup ergonomics
-- Default the station picker to the nearest NOAA station based on HA's configured latitude / longitude. Use the mdapi stations.json?type=tidepredictions list + a haversine ranking.
-- Store the resolved station name, coordinates, and tideType in entry.data (or as a device attribute) so entity titles and dashboards stay meaningful even when offline.
+A running board of what could ship next. Below the horizontal rule sits
+what is already shipped in `main` — see `git log` for detail. Items above
+the rule are open.
 
-Dashboards
-- Ship a standard tides widget (custom Lovelace card): current height gauge, 48 h curve, next high/low with countdown.
-- Chart card: date-range selector (prev day / next day arrows + date picker) so users can review tomorrow's tides or look back at what happened yesterday, not just "today". Data is already fetched (7-day window in coordinator + 48 h lookback) so it's a client-side navigation change; the WebSocket command may need to accept an optional [begin, end] range for correctness.
-- Delivery: bundle the compiled JS inside the integration (e.g.
-  custom_components/ha_tides_plus/frontend/tide-card.js), have the Python
-  component call hass.http.async_register_static_paths() to expose the file,
-  then auto-register the module as a Lovelace resource on setup so users get
-  the card without any HACS-frontend or manual "add resource" step. Community
-  guide: https://community.home-assistant.io/t/developer-guide-embedded-lovelace-card-in-a-home-assistant-integration/974909
-- Data path: expose the coordinator's raw hi/lo series (and the current
-  PCHIP-interpolated height) via a small WebSocket command so the card can
-  render a smooth 48 h chart client-side without pulling recorder history.
+## Open
 
-Automations
-- Ship a blueprint for the most common patterns (e.g. "run when tide crosses X ft rising", "notify 30 min before next low tide") so users don't have to hand-roll templates.
-- Bundle the blueprints in-integration under blueprints/automation/ha_tides_plus/ so they show up under Settings → Automations & scenes → Blueprints without a separate HACS install. Reference: HA docs on shipping blueprints from a custom_component.
-- Starter blueprint ideas:
-  - "Daytime ultra-low tide alert" — fire when a next low tide is (a) below threshold X, (b) between sunrise and sunset, (c) within Y hours from now — good for tidepool exploration, boat launching windows.
-  - "Slack window notification" — notify N minutes before high or low so users hit the "still water" window.
-  - "Tide crossing threshold" — trigger any automation when tide_height crosses X ft rising or falling (useful for kayak dock height, dinghy access, etc.).
+### Config and setup
 
-Alerts
-- Extreme-tide notifications: flag when the next high or low is within 10% of the yearly max/min. Requires fetching a wider window (annual harmonic predictions are cheap — one call, one JSON) and caching per-station stats.
+- **Options flow** — expose `datum` (MLLW / MLW / MSL / MHW / MHHW), the
+  extremum-hold window for `tide_state`, and any card-side defaults.
+  Nothing is user-configurable at runtime today.
 
-Mobile
-- iOS Live Activity via the HA Companion app: ongoing tide state on the lock screen with a live countdown to the next extremum.
+### Chart card
 
-Trailing "..." — a few natural neighbors you might have meant:
-- Widget/complication on Apple Watch (piggybacks on Live Activity).
-- Voice: Assist/Alexa response for "what time is the next high tide."
-- Currents (slack/ebb/flood) as a v2 provider once the tide-only story is stable — was in the original DESIGN doc as out-of-scope for v1.
+- **Date picker** in the nav header (`buttons: picker`). The `‹` / Today /
+  `›` step buttons are shipped; a calendar popup is still open.
+- **Multi-station label collisions** — when two stations' H peaks land close
+  in time, the permanent labels overlap. Needs a small collision-resolver.
+- **Dark-theme pass** — both cards use station colours and neutral greys,
+  but no explicit dark-theme check yet.
+- **On-demand cache extend** — paging past ±7 days shows "no cached
+  predictions". The WebSocket API could accept a `(begin, end)` range and
+  have the coordinator fetch and merge on demand.
+
+### Automations / blueprints
+
+- **Slack-window notification** — fire N minutes before an H or L so users
+  hit the still-water window (dive, launch, harbour transit).
+- **Tide crossing threshold (reactive)** — trigger the moment
+  `sensor.<>_tide_height` crosses a threshold rising or falling. Simple
+  `numeric_state` trigger; useful for dock height, sea-gate closures.
+- **Extreme-tide (near yearly max/min) alert** — needs an annual harmonic
+  fetch and per-station stats cache. Flag when the next H/L is within N %
+  of the annual extreme.
+
+### Providers (v2)
+
+- **Currents (slack / ebb / flood)** — needs the CO-OPS
+  `currents_predictions` product and a separate current-station picker.
+- **EU providers** as sibling integrations:
+  - Rijkswaterstaat (NL) — free, well documented.
+  - SHOM (FR), UKHO (UK) — registration-gated or paid.
+
+### Distribution
+
+- **Upstream rewrite** of core `noaa_tides` plus a BC shim (preserve the
+  legacy `unique_id = "<station>_summary"` and text-state format).
+- **HACS listing** once the integration stabilises.
+- **home-assistant/brands PR** to register the brand icon at
+  `brands.home-assistant.io`. Not needed for HA 2026.3+ (which reads the
+  in-repo `brand/` directory), but older HA versions still hit the CDN.
+
+### Reach
+
+- **iOS Live Activity** via the HA Companion app — lock-screen current
+  tide + countdown to next extremum.
+- **Apple Watch complication** — piggybacks on the Live Activity.
+- **Voice** — Assist / Alexa: *"when is the next high tide?"*.
+
+## Testing
+
+- **Tests** — no pytest suite yet. Wanted: PCHIP against known analytical
+  curves, coordinator against saved JSON fixtures, config-flow paths
+  including the geocode and station-picker branches, event scheduling with
+  `freezegun`.
+
+---
+
+## Shipped
+
+- **Station picker** — free-text search: US ZIP (via zippopotam.us),
+  place name (via Nominatim), 7-digit station ID, or empty for HA-home
+  coords. Haversine-ranks the ~3500 NOAA tide-prediction stations and
+  shows the nearest 20.
+- **Per-station device** with 10 sensors: `previous_high_tide`,
+  `previous_low_tide`, `next_high_tide`, `next_low_tide` (each a
+  `timestamp`) plus paired `_height` (each a `distance` in metres, HA
+  converts on display), `tide_height (estimated)` (PCHIP-interpolated,
+  updates every 60 s), `tide_state` (enum: `rising` / `falling` / `high`
+  / `low`).
+- **Bus events** — `ha_tides_plus_high_tide` and `_low_tide` fired at each
+  extremum with a payload including station ID, name, state, height, and
+  ISO time.
+- **±7-day cache** — coordinator fetches once per 12 h, keeps the last
+  good series if a fetch fails.
+- **extrema attribute** on the estimated-height sensor — full cached
+  hi/lo knot list in the sensor's display unit, so blueprints and
+  template automations can iterate every upcoming H/L rather than only
+  the scalar "next" siblings.
+- **Chart card** (`custom:tides-plus-card`) — ApexCharts area series with
+  PCHIP curve, permanent H/L labels above/below the peaks, filled water
+  fill to the plot floor (`plotOptions.area.fillTo: 'end'`), day / night
+  shading across the visible window, day-boundary markers on multi-day
+  spans, live crosshair legend, `‹ Today ›` nav in day or now anchor,
+  no-cache fallback state.
+- **Summary card** (`custom:tides-plus-summary-card`) — chronological
+  table with H / L / now rows, direction icons, swing in the header,
+  height-first ordering.
+- **Auto-loaded frontend** — `hass.http.async_register_static_paths` +
+  `add_extra_js_url` inject both cards + bundled ApexCharts without any
+  HACS-frontend install. In-repo `brand/` icon per HA 2026.3+.
+- **One bundled blueprint** — `tide_extreme_alert` — device selector +
+  direction switch (below / above) infers the sensor to watch, iterates
+  the `extrema` attribute for the first knot inside a configurable
+  lookahead that matches threshold + optional sun-aware daylight, then
+  fires a template-friendly notification with a default deep-link URL to
+  the station device.

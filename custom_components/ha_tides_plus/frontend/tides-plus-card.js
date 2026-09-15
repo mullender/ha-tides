@@ -971,8 +971,10 @@ class TidesPlusCard extends _TidesBase {
       if (!labelsPerStation) return;
       const candidates = st.dayKnots.filter(
         (k) =>
-          (now < tMin || now > tMax || Math.abs(k.t - now) > nowGap) &&
-          !dayBoundaries.some((boundary) => Math.abs(k.t - boundary) <= nowGap),
+          k.type !== "H" || (
+            (now < tMin || now > tMax || Math.abs(k.t - now) > nowGap) &&
+            !dayBoundaries.some((boundary) => Math.abs(k.t - boundary) <= nowGap)
+          ),
       );
       const stride = labelsPerStation
         ? Math.max(1, Math.ceil(candidates.length / labelsPerStation))

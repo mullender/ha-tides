@@ -38,8 +38,11 @@ const STATION_COLORS = [
   "#c62828",
 ];
 
-const NIGHT_FILL = "rgba(120, 144, 156, 0.18)";
 const NOW_STROKE = "rgba(198, 40, 40, 0.85)";
+const SERIES_DASH_PATTERNS = [0, 6, 2, 8, 4, 10];
+const VISUALLY_HIDDEN_STYLE =
+  "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;" +
+  "clip:rect(0,0,0,0);white-space:nowrap;border:0;";
 
 
 const ASSET_VERSION = new URL(import.meta.url).searchParams.get("v");
@@ -48,8 +51,8 @@ if (ASSET_VERSION) APEX_URL.searchParams.set("v", ASSET_VERSION);
 
 const NAV_BTN_STYLE =
   "background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,0.12));" +
-  "color:var(--primary-text-color,inherit);border-radius:4px;padding:2px 8px;" +
-  "cursor:pointer;font-size:13px;line-height:1;min-width:28px;";
+  "color:var(--primary-text-color,inherit);border-radius:8px;padding:0 12px;" +
+  "cursor:pointer;font-size:13px;line-height:1;min-width:44px;min-height:44px;";
 const NAV_BTN_DISABLED =
   "opacity:.35;cursor:default;";
 
@@ -141,6 +144,21 @@ function darkenHex(hex, amount) {
     Math.max(0, Math.round(parseInt(h, 16) * (1 - amount))),
   );
   return "#" + parts.map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function lightenHex(hex, amount) {
+  const match = String(hex || "").replace("#", "").match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!match) return hex;
+  const parts = [match[1], match[2], match[3]].map((part) => {
+    const value = parseInt(part, 16);
+    return Math.min(255, Math.round(value + (255 - value) * amount));
+  });
+  return "#" + parts.map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function themeValue(element, name, fallback) {
+  const value = window.getComputedStyle(element).getPropertyValue(name).trim();
+  return value || fallback;
 }
 
 function localMidnight(now = new Date()) {
@@ -269,7 +287,10 @@ class _TidesBase extends HTMLElement {
     this._lastRefresh = 0;
     this._loadGeneration = 0;
     this._tickTimer = null;
+    this._retryTimer = null;
+    this._retryCount = 0;
     this._windowOffset = 0;   // ms shift from the "current" anchor
+    this._keyboardCursorTime = null;
   }
 
   _baseDefaults() {
@@ -322,17 +343,20 @@ class _TidesBase extends HTMLElement {
     const atRest = this._windowOffset === 0;
     const stepLabel = cfg.anchor === "day" ? "day" : "window";
     const nav = showNav
-      ? `<span style="display:inline-flex;align-items:center;gap:4px;">
+      ? `<span style="display:inline-flex;align-items:center;gap:4px;margin-left:auto;">
            <button class="tp-nav" data-nav="reset" title="Back to ${resetLabel.toLowerCase()}"
+                   aria-label="Back to ${resetLabel.toLowerCase()}"
                    ${atRest ? "disabled" : ""}
                    style="${NAV_BTN_STYLE}${atRest ? NAV_BTN_DISABLED : ""}">${resetLabel}</button>
            <button class="tp-nav" data-nav="prev" title="Previous ${stepLabel}"
+                   aria-label="Previous ${stepLabel}"
                    style="${NAV_BTN_STYLE}">‹</button>
            <button class="tp-nav" data-nav="next" title="Next ${stepLabel}"
+                   aria-label="Next ${stepLabel}"
                    style="${NAV_BTN_STYLE}">›</button>
          </span>`
       : "";
-    return `<div class="tp-header" style="padding: 8px 12px 4px 16px; font-size: 13px; opacity: .9; display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+    return `<div class="tp-header" style="padding:8px 12px 4px 16px;font-size:13px;opacity:.9;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;">
       <span>${escapeHtml(label)}</span>
       ${nav}
     </div>`;
@@ -389,6 +413,11 @@ class _TidesBase extends HTMLElement {
         );
         if (!btn || btn.disabled) return;
         if (btn.dataset.action === "retry") {
+          if (this._retryTimer) {
+            window.clearTimeout(this._retryTimer);
+            this._retryTimer = null;
+          }
+          this._retryCount = 0;
           this._loadAll();
           return;
         }
@@ -397,6 +426,32 @@ class _TidesBase extends HTMLElement {
         else if (nav === "next") this._shift(1);
         else if (nav === "reset") this._shift(0);
       });
+      this.shadowRoot.addEventListener("keydown", (e) => {
+        const chart = e.composedPath().find(
+          (node) => node.nodeType === 1 && node.classList?.contains("tp-chart-interactive"),
+        );
+        if (!chart || !this._chartCtx) return;
+        if (!["ArrowLeft", "ArrowRight", "Home", "Escape"].includes(e.key)) return;
+        e.preventDefault();
+        if (e.key === "Escape") {
+          this._keyboardCursorTime = null;
+          this._updateLegend(null);
+          return;
+        }
+        const { tMin, tMax } = this._chartCtx;
+        if (e.key === "Home") {
+          this._keyboardCursorTime = Math.min(tMax, Math.max(tMin, Date.now()));
+        } else {
+          const step = (tMax - tMin) / 48;
+          const start = this._keyboardCursorTime
+            ?? Math.min(tMax, Math.max(tMin, Date.now()));
+          this._keyboardCursorTime = Math.min(
+            tMax,
+            Math.max(tMin, start + (e.key === "ArrowLeft" ? -step : step)),
+          );
+        }
+        this._updateLegend(this._keyboardCursorTime);
+      });
     }
   }
 
@@ -404,6 +459,10 @@ class _TidesBase extends HTMLElement {
     if (this._tickTimer) {
       window.clearInterval(this._tickTimer);
       this._tickTimer = null;
+    }
+    if (this._retryTimer) {
+      window.clearTimeout(this._retryTimer);
+      this._retryTimer = null;
     }
   }
 
@@ -416,6 +475,7 @@ class _TidesBase extends HTMLElement {
     this._errors = new Map();
     this._isLoading = false;
     this._lastRefresh = 0;
+    this._retryCount = 0;
     this._loadGeneration += 1;
     this._render();
     if (this._hass && this._config.stations.length) this._loadAll();
@@ -453,6 +513,15 @@ class _TidesBase extends HTMLElement {
     this._lastRefresh = Date.now();
     this._isLoading = false;
     this._render();
+    if (this._errors.size && this._retryCount < 3 && !this._retryTimer) {
+      this._retryCount += 1;
+      this._retryTimer = window.setTimeout(() => {
+        this._retryTimer = null;
+        this._loadAll();
+      }, this._retryCount * 5_000);
+    } else if (!this._errors.size) {
+      this._retryCount = 0;
+    }
   }
 
   async _loadOne(id) {
@@ -708,7 +777,22 @@ class TidesPlusCard extends _TidesBase {
         </div>`,
       )
       .join("");
-    return `<div id="tides-legend" style="padding: 2px 0 8px;">${blocks}</div>`;
+    return `<div id="tides-legend" aria-live="polite" style="padding:2px 0 8px;">${blocks}</div>`;
+  }
+
+  _chartSummaryHtml(ctx) {
+    const unit = unitLabel(ctx.unit);
+    const stations = ctx.perStation.map((station) => {
+      const events = station.dayKnots.map((knot) => {
+        const kind = knot.type === "H" ? "high" : "low";
+        const time = fmtTimeShort(new Date(knot.t), ctx.hass);
+        return `${kind} ${knot.y.toFixed(1)} ${unit} at ${time}`;
+      });
+      return `${station.label}: ${events.join(", ") || "no tide events in this range"}.`;
+    });
+    return `<div id="tides-chart-summary" style="${VISUALLY_HIDDEN_STYLE}">
+      ${escapeHtml(stations.join(" "))}
+    </div>`;
   }
 
   _updateLegend(cursorTime) {
@@ -757,15 +841,21 @@ class TidesPlusCard extends _TidesBase {
       this.shadowRoot.innerHTML = shell(`
         <div id="tides-warning-slot">${this._dataWarningHtml()}</div>
         ${this._navHeader(ctx)}
-        <div id="tides-apex-wrap" style="padding: 0 8px;">
+        <div id="tides-apex-wrap" class="tp-chart-interactive" tabindex="0"
+             role="img" aria-describedby="tides-chart-summary"
+             aria-label="Tide chart. Use the left and right arrow keys to inspect the timeline."
+             style="padding:0 8px;outline-offset:2px;">
           <div id="tides-apex-chart"></div>
         </div>
+        <div id="tides-chart-summary-slot">${this._chartSummaryHtml(ctx)}</div>
         <div id="tides-apex-legend-slot"></div>
       `);
     }
     // Refresh header + legend on every render (they may have new data).
     const warningSlot = this.shadowRoot.getElementById("tides-warning-slot");
     if (warningSlot) warningSlot.innerHTML = this._dataWarningHtml();
+    const summarySlot = this.shadowRoot.getElementById("tides-chart-summary-slot");
+    if (summarySlot) summarySlot.innerHTML = this._chartSummaryHtml(ctx);
     const headerEl = this.shadowRoot.querySelector(".tp-header");
     if (headerEl) headerEl.outerHTML = this._navHeader(ctx, "ApexCharts");
     const slot = this.shadowRoot.getElementById("tides-apex-legend-slot");
@@ -805,6 +895,31 @@ class TidesPlusCard extends _TidesBase {
 
   _buildApexOptions(ctx) {
     const { unit, perStation, tMin, tMax, heightMin, heightMax, nightRects: nightRectData, now, hass } = ctx;
+    const chartWidth = this.shadowRoot.getElementById("tides-apex-wrap")
+      ?.getBoundingClientRect().width || this.getBoundingClientRect().width || 600;
+    const darkMode = Boolean(
+      hass?.themes?.darkMode || window.matchMedia?.("(prefers-color-scheme: dark)").matches,
+    );
+    const primaryTextColor = themeValue(
+      this,
+      "--primary-text-color",
+      darkMode ? "#e1e1e1" : "#212121",
+    );
+    const secondaryTextColor = themeValue(
+      this,
+      "--secondary-text-color",
+      darkMode ? "#a3a3a3" : "#616161",
+    );
+    const dividerColor = themeValue(
+      this,
+      "--divider-color",
+      darkMode ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.12)",
+    );
+    const cardBackground = themeValue(
+      this,
+      "--ha-card-background",
+      themeValue(this, "--card-background-color", darkMode ? "#1c1c1c" : "#ffffff"),
+    );
 
     this._chartCtx = { tMin, tMax, unit, heightMin, heightMax };
 
@@ -825,7 +940,7 @@ class TidesPlusCard extends _TidesBase {
         }
         discreteMarkers.push({
           seriesIndex, dataPointIndex: idx,
-          fillColor: st.color, strokeColor: "#fff", size: 5,
+          fillColor: st.color, strokeColor: cardBackground, size: 5,
         });
       }
     });
@@ -833,21 +948,52 @@ class TidesPlusCard extends _TidesBase {
     // Permanent labels next to each hi/lo knot: time + height. Positioned
     // above H's and below L's so they don't cross the curve.
     const pointAnnotations = [];
-    perStation.forEach((st) => {
-      for (const k of st.dayKnots) {
+    const spanHours = (tMax - tMin) / 3600000;
+    const dayBoundaries = [];
+    if (spanHours > 24) {
+      let boundary = localMidnight(new Date(tMin));
+      if (boundary.getTime() < tMin) {
+        boundary = new Date(boundary.getTime() + 86400000);
+      }
+      while (boundary.getTime() <= tMax) {
+        dayBoundaries.push(boundary.getTime());
+        boundary = new Date(boundary.getTime() + 86400000);
+      }
+    }
+    const labelBudget = chartWidth < 480
+      ? 0
+      : Math.max(2, Math.floor((chartWidth - 60) / 110));
+    const labelsPerStation = labelBudget
+      ? Math.max(1, Math.floor(labelBudget / perStation.length))
+      : 0;
+    const nowGap = (tMax - tMin) * 90 / Math.max(chartWidth, 1);
+    perStation.forEach((st, seriesIndex) => {
+      if (!labelsPerStation) return;
+      const candidates = st.dayKnots.filter(
+        (k) =>
+          (now < tMin || now > tMax || Math.abs(k.t - now) > nowGap) &&
+          !dayBoundaries.some((boundary) => Math.abs(k.t - boundary) <= nowGap),
+      );
+      const stride = labelsPerStation
+        ? Math.max(1, Math.ceil(candidates.length / labelsPerStation))
+        : Infinity;
+      for (const [index, k] of candidates.entries()) {
+        if (index % stride !== 0) continue;
+        const position = (k.t - tMin) / (tMax - tMin);
         pointAnnotations.push({
           x: k.t,
           y: k.y,
-          seriesIndex: 0,
+          seriesIndex,
           marker: { size: 0, fillColor: "transparent", strokeColor: "transparent" },
           label: {
             text: `${k.y.toFixed(1)} ${unitLabel(unit)} · ${fmtTimeShort(new Date(k.t), hass)}`,
+            offsetX: position < 0.08 ? 38 : position > 0.92 ? -38 : 0,
             offsetY: k.type === "H" ? -8 : 22,
             borderWidth: 0,
             borderColor: "transparent",
             style: {
               background: "transparent",
-              color: darkenHex(st.color, 0.4),
+              color: darkMode ? lightenHex(st.color, 0.35) : darkenHex(st.color, 0.4),
               fontSize: "10px",
               fontWeight: 700,
               padding: { top: 0, bottom: 0, left: 2, right: 2 },
@@ -861,7 +1007,9 @@ class TidesPlusCard extends _TidesBase {
     for (const r of nightRectData || []) {
       xAnnotations.push({
         x: r.start, x2: r.end,
-        fillColor: NIGHT_FILL, opacity: 1, borderColor: "transparent",
+        fillColor: darkMode ? "rgba(96,125,139,0.28)" : "rgba(120,144,156,0.18)",
+        opacity: 1,
+        borderColor: "transparent",
       });
     }
     if (now >= tMin && now <= tMax) {
@@ -877,30 +1025,30 @@ class TidesPlusCard extends _TidesBase {
     }
 
     // Day-boundary markers when the visible window spans more than one day.
-    const spanHours = (tMax - tMin) / 3600000;
     if (spanHours > 24) {
       const dayFmt = { weekday: "short", day: "numeric" };
-      let d = localMidnight(new Date(tMin));
-      if (d.getTime() < tMin) d = new Date(d.getTime() + 86400000);
-      while (d.getTime() <= tMax) {
-        xAnnotations.push({
-          x: d.getTime(),
+      for (const boundary of dayBoundaries) {
+        const d = new Date(boundary);
+        const annotation = {
+          x: boundary,
           strokeDashArray: 4,
-          borderColor: "rgba(0,0,0,0.25)",
-          label: {
+          borderColor: dividerColor,
+        };
+        if (chartWidth >= 480) {
+          annotation.label = {
             text: d.toLocaleDateString(hass && hass.locale && hass.locale.language, dayFmt),
             orientation: "horizontal",
             position: "top",
             offsetY: 0,
             borderColor: "transparent",
             style: {
-              color: "var(--secondary-text-color, #666)",
+              color: secondaryTextColor,
               background: "transparent",
               fontSize: "10px",
             },
-          },
-        });
-        d = new Date(d.getTime() + 86400000);
+          };
+        }
+        xAnnotations.push(annotation);
       }
     }
 
@@ -913,6 +1061,7 @@ class TidesPlusCard extends _TidesBase {
         zoom: { enabled: true, type: "x" },
         animations: { enabled: false },
         fontFamily: "var(--primary-font-family, sans-serif)",
+        foreColor: primaryTextColor,
         background: "transparent",
         events: {
           mouseLeave: function () {
@@ -920,10 +1069,16 @@ class TidesPlusCard extends _TidesBase {
           },
         },
       },
-      theme: { mode: "light" },
+      theme: { mode: darkMode ? "dark" : "light" },
       series,
       dataLabels: { enabled: false },
-      stroke: { curve: "straight", width: 2 },
+      stroke: {
+        curve: "straight",
+        width: 2,
+        dashArray: perStation.map(
+          (_, index) => SERIES_DASH_PATTERNS[index % SERIES_DASH_PATTERNS.length],
+        ),
+      },
       // Solid water fill under the curve — reaches all the way down to the
       // axis so the shading reads as a filled body of water rather than a
       // fading gradient. Keeps the per-station colour for multi-station
@@ -944,11 +1099,13 @@ class TidesPlusCard extends _TidesBase {
         type: "datetime", min: tMin, max: tMax,
         labels: {
           datetimeUTC: false,
+          hideOverlappingLabels: true,
+          rotate: 0,
           format: (hass && hass.locale && hass.locale.time_format === "24") ? "H:mm" : "h TT",
         },
         tooltip: { enabled: false },
         axisTicks: { show: true },
-        crosshairs: { show: true, stroke: { color: "rgba(0,0,0,0.35)", width: 1, dashArray: 3 } },
+        crosshairs: { show: true, stroke: { color: dividerColor, width: 1, dashArray: 3 } },
       },
       yaxis: {
         min: heightMin, max: heightMax,
@@ -973,7 +1130,7 @@ class TidesPlusCard extends _TidesBase {
           return "";
         },
       },
-      grid: { borderColor: "rgba(0,0,0,0.08)" },
+      grid: { borderColor: dividerColor },
       legend: { show: false },
       annotations: { xaxis: xAnnotations, points: pointAnnotations },
     };
@@ -1065,7 +1222,7 @@ class TidesPlusSummaryCard extends _TidesBase {
         ? `<span style="font-size:12px;opacity:.7;margin-left:auto;font-variant-numeric:tabular-nums;">Swing <strong>${swing.toFixed(1)} ${u}</strong></span>`
         : "";
       return `
-        <div style="padding: 10px 16px 12px; border-top: 1px solid rgba(0,0,0,0.06);">
+        <div style="padding:10px 16px 12px;border-top:1px solid var(--divider-color,rgba(0,0,0,0.12));min-width:0;">
           <div style="display:flex;align-items:center;margin-bottom:6px;">
             <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:8px;flex:none;"></span>
             <span style="font-size:14px;"><strong>${escapeHtml(s.label)}</strong></span>
@@ -1078,7 +1235,9 @@ class TidesPlusSummaryCard extends _TidesBase {
     this.shadowRoot.innerHTML = shell(`
       ${this._dataWarningHtml()}
       ${this._navHeader(ctx)}
-      ${stationsHtml}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));">
+        ${stationsHtml}
+      </div>
     `);
     this._attachNavHandlers();
   }
@@ -1088,7 +1247,15 @@ class TidesPlusSummaryCard extends _TidesBase {
 // ---------- shared render helpers ----------
 
 function shell(inner) {
-  return `<ha-card>${inner}</ha-card>`;
+  return `<ha-card>
+    <style>
+      .tp-nav:focus-visible, .tp-chart-interactive:focus-visible {
+        outline: 2px solid var(--primary-color, #03a9f4);
+        outline-offset: 2px;
+      }
+    </style>
+    ${inner}
+  </ha-card>`;
 }
 
 function eventIcon(kind, rising) {
@@ -1098,14 +1265,23 @@ function eventIcon(kind, rising) {
   const mdi =
     kind === "H" ? "mdi:wave-arrow-up"
     : kind === "L" ? "mdi:wave-arrow-down"
+    : rising == null ? "mdi:swap-horizontal"
     : rising ? "mdi:trending-up"
     : "mdi:trending-down";
   const color =
-    kind === "H" ? "#0e8a5f"
-    : kind === "L" ? "#c2410c"
-    : rising ? "#0e8a5f"
-    : "#c2410c";
-  return `<ha-icon icon="${mdi}" style="--mdc-icon-size:18px;color:${color};vertical-align:middle;"></ha-icon>`;
+    kind === "H" ? "var(--success-color,#0e8a5f)"
+    : kind === "L" ? "var(--warning-color,#c2410c)"
+    : rising == null ? "var(--secondary-text-color,#666)"
+    : rising ? "var(--success-color,#0e8a5f)"
+    : "var(--warning-color,#c2410c)";
+  const label =
+    kind === "H" ? "High tide"
+    : kind === "L" ? "Low tide"
+    : rising == null ? "Tide direction unavailable"
+    : rising ? "Rising tide"
+    : "Falling tide";
+  return `<ha-icon icon="${mdi}" role="img" aria-label="${label}"
+    style="--mdc-icon-size:18px;color:${color};vertical-align:middle;"></ha-icon>`;
 }
 
 function currentDirection(perStationEntry) {
@@ -1136,7 +1312,7 @@ function chronologicalTable(station, ctx, unit, hass) {
 
   const rows = events.map((e) => {
     const highlight = e.kind === "NOW"
-      ? "background: rgba(120, 144, 156, 0.08);"
+      ? "background:var(--secondary-background-color,rgba(120,144,156,0.08));"
       : "";
     const timeLabel = e.kind === "NOW"
       ? `<span style="font-weight:600;">now</span>`
@@ -1149,6 +1325,14 @@ function chronologicalTable(station, ctx, unit, hass) {
   }).join("");
 
   return `<table style="font-size:13px;border-collapse:collapse;">
+    <caption style="${VISUALLY_HIDDEN_STYLE}">Tide events for ${escapeHtml(station.label)}</caption>
+    <thead>
+      <tr style="color:var(--secondary-text-color);font-size:11px;">
+        <th scope="col" style="padding:3px 8px 3px 0;text-align:right;">Height</th>
+        <th scope="col" style="padding:3px 12px 3px 4px;text-align:left;">Time</th>
+        <th scope="col" style="padding:3px 0;text-align:left;">State</th>
+      </tr>
+    </thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -1160,31 +1344,34 @@ const EDITOR_STYLE = `
   :host { display: block; }
   .editor { padding: 16px; }
   .field { margin-bottom: 16px; }
-  .field > label {
+  .field > label, .field-label {
     display: block; font-weight: 500; font-size: 13px;
     margin-bottom: 6px; color: var(--primary-text-color, #333);
   }
   .field > select, .field > input {
     width: 100%; padding: 8px; border-radius: 4px;
+    min-height: 44px;
     border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
     background: var(--card-background-color, #fff);
     color: var(--primary-text-color, inherit);
     font-size: 14px; box-sizing: border-box;
   }
   .field > select:focus, .field > input:focus {
-    outline: none;
+    outline: 2px solid var(--primary-color, #03a9f4);
+    outline-offset: 2px;
     border-color: var(--primary-color, #03a9f4);
   }
   .station-list { display: flex; flex-direction: column; gap: 4px; }
   .station-item {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    min-height: 44px; box-sizing: border-box;
   }
   .station-item:hover {
     background: var(--secondary-background-color, rgba(0,0,0,0.04));
   }
   .station-item input[type="checkbox"] {
-    width: 16px; height: 16px; margin: 0; cursor: pointer;
+    width: 20px; height: 20px; margin: 0; cursor: pointer;
   }
   .station-name { font-size: 14px; }
   .station-id { font-size: 12px; opacity: .6; margin-left: 4px; }
@@ -1193,6 +1380,9 @@ const EDITOR_STYLE = `
   }
   .row { display: flex; gap: 12px; }
   .row > .field { flex: 1; }
+  @media (max-width: 420px) {
+    .row { display: block; }
+  }
 `;
 
 class _EditorBase extends HTMLElement {
@@ -1241,7 +1431,7 @@ class _EditorBase extends HTMLElement {
     const selected = (this._config.stations || []).map(String);
     if (!this._stations || !this._stations.length) {
       return `<div class="field">
-        <label>Stations</label>
+        <div class="field-label">Stations</div>
         <div class="no-stations">No stations configured yet. Add one via Settings → Devices & Services → Tides Plus.</div>
       </div>`;
     }
@@ -1258,16 +1448,16 @@ class _EditorBase extends HTMLElement {
       </label>`;
     }).join("");
     return `<div class="field">
-      <label>Stations</label>
-      <div class="station-list">${items}</div>
+      <div class="field-label" id="stations-label">Stations</div>
+      <div class="station-list" role="group" aria-labelledby="stations-label">${items}</div>
     </div>`;
   }
 
   _unitPickerHtml() {
     const v = this._config.unit || "";
     return `<div class="field">
-      <label>Unit</label>
-      <select data-field="unit">
+      <label for="unit-select">Unit</label>
+      <select id="unit-select" data-field="unit">
         <option value=""${v === "" ? " selected" : ""}>System default</option>
         <option value="metric"${v === "metric" ? " selected" : ""}>Metric (m)</option>
         <option value="imperial"${v === "imperial" ? " selected" : ""}>Imperial (ft)</option>
@@ -1275,18 +1465,19 @@ class _EditorBase extends HTMLElement {
     </div>`;
   }
 
-  _chartFieldsHtml() {
+  _chartFieldsHtml({ includeSun = true } = {}) {
     const cfg = this._config;
     const anchor = cfg.anchor || "day";
     const buttons = cfg.buttons || "forward-backward";
-    const sunEntity = cfg.sun_entity || "sun.sun";
-    const hoursBefore = cfg.hours_before ?? 0;
-    const hoursAfter = cfg.hours_after ?? 24;
+    const configuredBefore = Number(cfg.hours_before ?? 0);
+    const configuredAfter = Number(cfg.hours_after ?? 24);
+    const hoursBefore = Number.isFinite(configuredBefore) ? configuredBefore : 0;
+    const hoursAfter = Number.isFinite(configuredAfter) ? configuredAfter : 24;
 
     return `
       <div class="field">
-        <label>Anchor</label>
-        <select data-field="anchor">
+        <label for="anchor-select">Anchor</label>
+        <select id="anchor-select" data-field="anchor">
           <option value="day"${anchor === "day" ? " selected" : ""}>Day (midnight to midnight)</option>
           <option value="now"${anchor === "now" ? " selected" : ""}>Now (rolling window)</option>
         </select>
@@ -1294,30 +1485,30 @@ class _EditorBase extends HTMLElement {
 
       <div class="row">
         <div class="field">
-          <label>Hours before</label>
-          <input type="number" data-field="hours_before" value="${hoursBefore}" min="0" max="168" step="1">
+          <label for="hours-before-input">Hours before</label>
+          <input id="hours-before-input" type="number" data-field="hours_before" value="${hoursBefore}" min="0" max="168" step="1">
         </div>
         <div class="field">
-          <label>Hours after</label>
-          <input type="number" data-field="hours_after" value="${hoursAfter}" min="1" max="168" step="1">
+          <label for="hours-after-input">Hours after</label>
+          <input id="hours-after-input" type="number" data-field="hours_after" value="${hoursAfter}" min="1" max="168" step="1">
         </div>
       </div>
 
       <div class="field">
-        <label>Navigation buttons</label>
-        <select data-field="buttons">
+        <label for="buttons-select">Navigation buttons</label>
+        <select id="buttons-select" data-field="buttons">
           <option value="forward-backward"${buttons === "forward-backward" ? " selected" : ""}>Forward / backward</option>
           <option value="none"${buttons === "none" ? " selected" : ""}>None</option>
         </select>
       </div>
 
-      <div class="field">
+      ${includeSun ? `<div class="field">
         <ha-entity-picker
           id="sun-entity-picker"
           label="Sun entity (for day/night shading)"
           data-field="sun_entity"
         ></ha-entity-picker>
-      </div>`;
+      </div>` : ""}`;
   }
 
   _attachListeners() {
@@ -1398,7 +1589,7 @@ class TidesPlusSummaryCardEditor extends _EditorBase {
     this.shadowRoot.innerHTML = `<style>${EDITOR_STYLE}</style>
       <div class="editor">
         ${this._stationPickerHtml()}
-        ${this._chartFieldsHtml()}
+        ${this._chartFieldsHtml({ includeSun: false })}
         ${this._unitPickerHtml()}
       </div>`;
     this._attachListeners();

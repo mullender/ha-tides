@@ -1,11 +1,12 @@
 {
   "domain": "ha_tides_plus",
   "name": "Tides Plus",
-  "version": "0.1.0",
   "codeowners": ["@mullender"],
   "config_flow": true,
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/mullender/ha-tides",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/mullender/ha-tides/issues",
-  "requirements": []
+  "requirements": [],
+  "version": "0.1.0"
 }

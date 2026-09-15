@@ -105,10 +105,10 @@ ID to pick specifically.
   → the entry → "..." → *Reload*. No container restart.
 - **`manifest.json`, `config_flow.py`, or new entities** —
   `docker compose restart homeassistant`.
-- **Frontend (`frontend/*.js`)** — hard-refresh the browser
-  (Cmd/Ctrl-Shift-R). Chrome DevTools with *Disable cache* on the
-  Network tab is a huge time saver; without it the SPA holds onto the
-  cached module.
+- **Frontend (`frontend/*.js`)** — restart Home Assistant, then reload
+  the browser. Startup adds a release and content hash to the frontend
+  URL. For a faster loop, use a hard reload with *Disable cache* in the
+  Chrome Network panel; this loads an edited file without a restart.
 - **Blueprint YAML** — `Developer tools → Services → automation.reload`,
   or use the UI's blueprint import re-run.
 
@@ -178,6 +178,11 @@ hard-refresh the browser.
 
 - Card and summary auto-load via `add_extra_js_url` in `async_setup`.
   No HACS-frontend install is needed on the user side.
+
+- The frontend URL has the form `?v=<manifest-version>-<content-hash>`.
+  The hash covers the card and ApexCharts files. The card passes the
+  same value to the ApexCharts URL. This changes the Home Assistant
+  service-worker cache key when either file changes.
 
 - The card element carries an `_updateLegend(cursorTime)` method that
   the ApexCharts `tooltip.custom` callback fires on every plot-area

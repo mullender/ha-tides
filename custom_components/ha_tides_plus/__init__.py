@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -40,6 +42,17 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _FRONTEND_URL = "/ha_tides_plus/tides-plus-card.js"
 _APEX_URL = "/ha_tides_plus/apexcharts.min.js"
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
+_MANIFEST_PATH = Path(__file__).parent / "manifest.json"
+
+
+def _frontend_version() -> str:
+    """Return a release and content version for the frontend assets."""
+    manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+    digest = hashlib.sha256()
+    for filename in ("tides-plus-card.js", "apexcharts.min.js"):
+        digest.update(filename.encode())
+        digest.update((_FRONTEND_DIR / filename).read_bytes())
+    return f"{manifest['version']}-{digest.hexdigest()[:12]}"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -57,8 +70,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             ),
         ]
     )
-    add_extra_js_url(hass, _FRONTEND_URL)
-    _LOGGER.info("ha_tides_plus card served at %s", _FRONTEND_URL)
+    frontend_version = await hass.async_add_executor_job(_frontend_version)
+    versioned_frontend_url = f"{_FRONTEND_URL}?v={frontend_version}"
+    add_extra_js_url(hass, versioned_frontend_url)
+    _LOGGER.info("ha_tides_plus card served at %s", versioned_frontend_url)
     return True
 
 

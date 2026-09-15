@@ -41,7 +41,9 @@ const NIGHT_FILL = "rgba(120, 144, 156, 0.18)";
 const NOW_STROKE = "rgba(198, 40, 40, 0.85)";
 
 
-const APEX_URL = "/ha_tides_plus/apexcharts.min.js";
+const ASSET_VERSION = new URL(import.meta.url).searchParams.get("v");
+const APEX_URL = new URL("/ha_tides_plus/apexcharts.min.js", window.location.origin);
+if (ASSET_VERSION) APEX_URL.searchParams.set("v", ASSET_VERSION);
 
 const NAV_BTN_STYLE =
   "background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,0.12));" +
@@ -233,7 +235,7 @@ function ensureApexLoaded() {
   if (_apexPromise) return _apexPromise;
   _apexPromise = new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = APEX_URL;
+    s.src = APEX_URL.href;
     s.onload = resolve;
     s.onerror = () => reject(new Error("Failed to load ApexCharts"));
     document.head.appendChild(s);

@@ -545,12 +545,21 @@ class TidesPlusCard extends _TidesBase {
     return { stations: [] };
   }
 
-  getCardSize() { return 4; }
+  getCardSize() { return 7; }
+
+  getGridOptions() {
+    return {
+      columns: "full",
+      rows: "auto",
+      min_columns: 6,
+      min_rows: 3,
+    };
+  }
 
   getLayoutOptions() {
     return {
       grid_columns: "full",
-      grid_rows: 4,
+      grid_rows: "auto",
       grid_min_columns: 2,
       grid_min_rows: 3,
     };
@@ -902,7 +911,18 @@ class TidesPlusSummaryCard extends _TidesBase {
     return { stations: [] };
   }
 
-  getCardSize() { return 2; }
+  getCardSize() {
+    return 2 + 2 * Math.max(1, this._config?.stations?.length || 1);
+  }
+
+  getGridOptions() {
+    return {
+      columns: "full",
+      rows: "auto",
+      min_columns: 3,
+      min_rows: 2,
+    };
+  }
 
   getLayoutOptions() {
     return {

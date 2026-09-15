@@ -148,14 +148,14 @@ override with any combination of:
 type: custom:tides-plus-card
 stations: [9445882]
 grid_options:
-  columns: full        # "full" or 1-4  (default: full)
-  rows: 4              # grid rows      (default: 4 for chart, auto for summary)
+  columns: full        # "full" or 1-12 (default: full)
+  rows: auto           # grid rows      (default: auto)
 ```
 
 | Option | Values | Chart default | Summary default |
 |---|---|---|---|
-| `columns` | `1`–`4` or `full` | `full` | `full` |
-| `rows` | positive integer or `auto` | `4` | `auto` |
+| `columns` | `1`–`12` or `full` | `full` | `full` |
+| `rows` | positive integer or `auto` | `auto` | `auto` |
 
 `grid_options` is a standard Home Assistant feature — see the HA
 [dashboard cards documentation](https://www.home-assistant.io/dashboards/cards/#grid_options)

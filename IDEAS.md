@@ -39,9 +39,14 @@ the rule are open.
 
 - **Currents (slack / ebb / flood)** — needs the CO-OPS
   `currents_predictions` product and a separate current-station picker.
-- **EU providers** as sibling integrations:
-  - Rijkswaterstaat (NL) — free, well documented.
-  - SHOM (FR), UKHO (UK) — registration-gated or paid.
+- **More EU providers** — SHOM (FR), UKHO (UK), and other national
+  agencies. Follow [`docs/providers.md`](docs/providers.md) — a new
+  provider is one Python file plus a registry line.
+- **Prominence filter for RWS predictions** — Scheveningen and other
+  agger-prone NL stations report every local extremum, including the
+  small mid-cycle wobbles. A prominence threshold would let users hide
+  the agger from the summary card and the `next_low_tide` sensor while
+  keeping it in the chart.
 
 ### Distribution
 
@@ -70,10 +75,21 @@ the rule are open.
 
 ## Shipped
 
+- **Provider abstraction** — `providers/` package with a `Provider`
+  ABC, a small registry, and two shipped implementations (NOAA CO-OPS
+  for the US, Rijkswaterstaat DDAPI 2.0 for NL). Adding a third source
+  is one Python file plus a registry line — see
+  [`docs/providers.md`](docs/providers.md) for the how-to. The config
+  flow gains a provider-picker step when more than one is registered.
+- **Rijkswaterstaat (NL)** — ~150 stations, coast + estuaries, filtered
+  from the DDAPI 2.0 catalogue by the astronomic-tide marker. The 10-min
+  WATHTE series is walked (with plateau collapse + parabolic peak
+  refinement) to extract H/L knots. Handles NAP-referenced coastal
+  stations and MSL-referenced offshore platforms.
 - **Station picker** — free-text search: US ZIP (via zippopotam.us),
-  place name (via Nominatim), 7-digit station ID, or empty for HA-home
-  coords. Haversine-ranks the ~3500 NOAA tide-prediction stations and
-  shows the nearest 20.
+  place name (via Nominatim), native station ID, or empty for HA-home
+  coords. Haversine-ranks the provider's catalogue and shows the
+  nearest 20.
 - **Per-station device** with 10 sensors: `previous_high_tide`,
   `previous_low_tide`, `next_high_tide`, `next_low_tide` (each a
   `timestamp`) plus paired `_height` (each a `distance` in metres, HA

@@ -1,8 +1,11 @@
 # Tides Plus — Design
 
-Home Assistant custom integration for NOAA CO-OPS tide predictions.
-Ships in the `ha_tides_plus` domain. The legacy core `noaa_tides`
-integration is untouched; both can run side by side.
+Home Assistant custom integration for tide predictions from multiple
+public data sources. Ships in the `ha_tides_plus` domain and includes
+NOAA CO-OPS (USA) and Rijkswaterstaat (NL) out of the box, behind a
+provider abstraction that any contributor can extend with one Python
+file — see [`docs/providers.md`](docs/providers.md). The legacy core
+`noaa_tides` integration is untouched; both can run side by side.
 
 ## 1. Goals
 
@@ -13,21 +16,31 @@ integration is untouched; both can run side by side.
 - Rising / falling / high / low state, derived from the hi/lo series
   without a second API call.
 - Bus events fired at every extremum, for `event` triggers.
-- Config flow with a station picker (ZIP, place name, or direct ID).
+- Config flow with a provider picker + station picker (ZIP, place
+  name, or direct ID).
 - Bundled dashboard cards (chart + summary) and automation blueprints.
 - Cover every NOAA CO-OPS tide-prediction station in the US
-  (reference + subordinate).
+  (reference + subordinate) and every Rijkswaterstaat station that
+  publishes astronomic tides in NL (~150 coastal + estuary locations).
+- Pluggable provider layer so more countries can be added by dropping
+  one Python file into `providers/`.
 
 ## 2. Non-goals (v1)
 
 - Slack water and true current direction — need `currents_predictions`
   and a separate current-station list. Deferred to v2.
-- Non-US providers (SHOM, Rijkswaterstaat, UKHO). Deferred; the
-  card / summary / coordinator machinery is provider-agnostic in shape.
+- Additional non-US / non-NL providers (SHOM, UKHO, …). Not shipped
+  yet, but the provider layer accepts new implementations without any
+  changes to the core.
 - Historical observations. Predictions only.
-- Sea-surface temperature, wind, and other CO-OPS products.
+- Sea-surface temperature, wind, and other CO-OPS or RWS products.
 
-## 3. Data source
+## 3. Data sources
+
+Two providers ship today, each contained in one module under
+`custom_components/ha_tides_plus/providers/`.
+
+### 3.1 NOAA CO-OPS (USA)
 
 - Base URL: `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
 - Product: `predictions`
@@ -42,15 +55,47 @@ integration is untouched; both can run side by side.
   `.../stations.json?type=tidepredictions` (whole catalogue, used by the
   nearest-station picker).
 
+### 3.2 Rijkswaterstaat (NL)
+
+- Base URL: `https://ddapi20-waterwebservices.rijkswaterstaat.nl`
+- Catalogue: `POST /METADATASERVICES/OphalenCatalogus` with all axes
+  enabled returns 2499 locations and 3426 aquo-metadata entries.
+  Filtered on the astronomic-tide marker (Aquo MID 2976, "Getijextreemtype
+  astronomisch in Oppervlaktewater") for the station picker — yields
+  ~150 stations.
+- Predictions: `POST /ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen`
+  with `Compartiment=OW`, `Grootheid=WATHTE`, `Hoedanigheid=NAP` (or
+  `MSL` for offshore platforms) returns three parallel series per
+  location — observed, weather-forecast, and astronomic. The provider
+  picks the entry whose `Parameter_Wat_Omschrijving` contains
+  `astronomisch`.
+- H/L extraction: astronomic samples arrive at 10-minute intervals in
+  centimetres above the reference plane. Equal-height runs (RWS
+  quantises to whole cm) collapse to their centre sample; a
+  neighbour-compare then finds every local extremum; peak times are
+  refined with a three-point parabolic fit.
+- No API key.
+
+### 3.3 Adding a third provider
+
+See [`docs/providers.md`](docs/providers.md) for the full how-to. In
+short: subclass `Provider` in a new module under `providers/`,
+implement three async methods (`list_stations`, `get_station`,
+`get_hilo_predictions`) that return the shared `Station` /
+`TideExtremum` shape, and add the class to `_REGISTRY` in
+`providers/__init__.py`. Everything downstream picks it up.
+
 ## 4. Architecture
 
 One `ConfigEntry` per station, one `DataUpdateCoordinator` per entry.
+Each entry stores a `provider` id (default `noaa` for entries created
+before the abstraction landed — migration is automatic).
 
 Coordinator refresh:
 
 - Interval: 12 h.
 - Window: `LOOKBACK_HOURS = 168` back + `LOOKAHEAD_HOURS = 168` forward
-  (±7 days). NOAA accepts up to 31 days per fetch; 14 days is well under.
+  (±7 days). Comfortably within every provider's per-call limits.
 - On failure, the last good series is kept. The entry fails only if the
   cache no longer covers `now()`.
 
@@ -92,7 +137,9 @@ Ten entities per station:
 | `sensor.<name>_previous_low_tide_height` | distance | Height of the most recent L. |
 
 All ten share one `DeviceInfo` per station (identifier `(DOMAIN,
-station_id)`, name `<id>: <station_name>, <state>`, coords, NOAA URL).
+station_id)`, name `<id>: <station_name>, <state>`, coords, provider
+station URL, and the provider's `manufacturer` string). Attribution
+on every entity comes from `provider.attribution`.
 
 ## 7. Ebb / flood state machine
 
@@ -124,6 +171,9 @@ Payload:
 }
 ```
 
+`station_state` is populated only when the provider fills it in
+(NOAA does; RWS leaves it `null`).
+
 Events are scheduled with `async_track_point_in_time` on each coordinator
 refresh and cancelled on unload. Users trigger on the event (lowest
 latency) or on the `next_*_tide` timestamp sensors (survive an HA
@@ -131,23 +181,32 @@ restart).
 
 ## 9. Config flow
 
+Step 0 — provider (only shown when more than one provider is
+registered):
+
+- Dropdown of `(provider.id, provider.label)` pairs, defaulting to
+  NOAA.
+
 Step 1 — search:
 
 - One text input. Interpreted as:
   - empty → `hass.config.latitude` / `longitude`.
-  - 5 digits → US ZIP; resolved via `api.zippopotam.us`.
-  - 7 digits → direct NOAA station ID (skips step 2).
+  - `provider.parse_direct_id(query)` returns non-None → skip step 2.
+    NOAA matches 7-digit numeric; RWS matches non-space, non-numeric
+    dotted slugs.
+  - 5 digits → US ZIP; resolved via `api.zippopotam.us` (geocode step).
   - anything else → geocoded via OpenStreetMap Nominatim.
-- If not a direct ID, HA fetches the full ~3500-station catalogue and
-  haversine-ranks against the resolved lat/lng.
+- If not a direct ID, HA fetches the provider's full station
+  catalogue and haversine-ranks against the resolved lat/lng.
 
 Step 2 — pick station:
 
 - Dropdown of the nearest 20 stations, labelled
-  `"<Name>, <ST> — <km> km (station: <id>)"`.
-- On submit, the station is validated via the mdapi (reference *or*
-  subordinate stations both accepted) and the entry is created with
-  station name, state, and coordinates persisted in `entry.data`.
+  `"<Name>, <ST> — <km> km (station: <id>)"`. `<ST>` is `station.state`
+  when the provider populates it (NOAA does; RWS leaves it `None`).
+- On submit, the station is validated through `provider.get_station`,
+  the entry unique-ID is the raw station ID, and station name, state,
+  coordinates, and provider ID are persisted in `entry.data`.
 
 Options flow: not shipped yet. Planned inputs: `datum`,
 `hold_window_minutes`, `unit` override.

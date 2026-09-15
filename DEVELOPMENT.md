@@ -25,10 +25,14 @@ ha_tides/
     ha_tides_plus/
       __init__.py               # async_setup + async_setup_entry, WS + card registration
       manifest.json
-      config_flow.py            # station picker: ZIP / place / direct-ID + list_tide_stations
+      config_flow.py            # provider picker + station picker (ZIP / place / direct-ID)
       const.py
       coordinator.py            # DataUpdateCoordinator, ±7-day cache, 12h refresh
-      api.py                    # NOAA client (get_station, list_tide_stations, get_hilo_predictions)
+      providers/                # tide-source implementations
+        __init__.py             # registry: {"noaa": NoaaProvider, "rws": RwsProvider}
+        base.py                 # Provider ABC + Station / TideExtremum dataclasses
+        noaa.py                 # NOAA CO-OPS client
+        rws.py                  # Rijkswaterstaat DDAPI 2.0 client
       geocode.py                # zippopotam.us + Nominatim
       helpers.py                # format_device_name, haversine_km
       interpolation.py          # PCHIP + tide_state derivation
@@ -44,6 +48,9 @@ ha_tides/
   blueprints/automation/ha_tides_plus/
     tide_extreme_alert.yaml
   brands/                       # design source (SVG + PIL renderer)
+  docs/
+    providers.md                # how-to for adding a new provider
+    screenshots/                # README screenshots
   ha_config/                    # gitignored; per-dev HA config + storage
   docker-compose.yml
   hacs.json
@@ -87,9 +94,10 @@ docker compose logs -f homeassistant
 ```
 
 Open <http://localhost:8123>, complete first-user onboarding, then
-**Settings → Devices & Services → Add Integration → *Tides Plus (USA,
-NOAA)***. Empty query uses your HA-home coords; type a ZIP, place, or
-7-digit station ID to pick specifically.
+**Settings → Devices & Services → Add Integration → *Tides Plus***.
+Pick a provider (NOAA for US stations, Rijkswaterstaat for NL). Empty
+query uses your HA-home coords; type a ZIP, place, or native station
+ID to pick specifically.
 
 ## 4. Reload cadence
 
@@ -195,6 +203,37 @@ Python — importing `homeassistant.util.yaml.loader.load_yaml` to
 parse-check blueprint YAMLs, or importing the integration modules
 directly and hitting the mdapi.
 
+Provider modules avoid HA imports, so you can also smoke-test them
+against the live upstream from a plain venv:
+
+```
+python3 -m venv /tmp/hatv && /tmp/hatv/bin/pip install aiohttp
+/tmp/hatv/bin/python - <<'PY'
+import asyncio, sys, importlib.util, types
+from pathlib import Path
+root = Path('custom_components/ha_tides_plus/providers')
+pkg = types.ModuleType('providers'); pkg.__path__ = [str(root)]; sys.modules['providers'] = pkg
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec); sys.modules[name] = m
+    spec.loader.exec_module(m); return m
+sys.modules['providers.base'] = load('providers.base', root / 'base.py')
+rws = load('providers.rws', root / 'rws.py')
+import aiohttp
+from datetime import datetime, timedelta, UTC
+async def main():
+    async with aiohttp.ClientSession() as s:
+        p = rws.RwsProvider()
+        knots = await p.get_hilo_predictions(s, 'scheveningen', begin=datetime.now(UTC), hours=48)
+        for k in knots: print(k)
+asyncio.run(main())
+PY
+```
+
+The `sys.modules` prelude is only needed because
+`ha_tides_plus/__init__.py` pulls in `homeassistant.*` on import — the
+provider modules themselves import only `aiohttp` and stdlib.
+
 ## 9. Testing (not shipped yet)
 
 Planned:
@@ -210,8 +249,8 @@ numpy
 
 Guidelines when the suite lands:
 
-- Never hit the live NOAA API in tests. Save JSON responses under
-  `tests/fixtures/`.
+- Never hit a live provider API in tests. Save JSON responses under
+  `tests/fixtures/<provider>/`.
 - Freeze time with `freezegun` for extremum-scheduling tests.
 - Assert on the coordinator's public state and on the WebSocket API
   responses, not on internal attributes.
@@ -222,7 +261,7 @@ Guidelines when the suite lands:
 
 ```json
 {
-  "name": "Tides Plus (USA, NOAA)",
+  "name": "Tides Plus",
   "render_readme": true,
   "homeassistant": "2025.1.0",
   "content_in_root": false
@@ -239,7 +278,9 @@ Publish path:
 2. HA users install via HACS → *Custom repositories* → paste
    `https://github.com/mullender/ha-tides`, category *Integration*.
 
-## 11. NOAA API notes
+## 11. Provider API notes
+
+### 11.1 NOAA CO-OPS (USA)
 
 - Base URL:
   `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter`
@@ -269,8 +310,51 @@ https://api.tidesandcurrents.noaa.gov/api/prod/datagetter
   &interval=hilo
 ```
 
-Attribution string: `"Data provided by NOAA"`, set via
-`_attr_attribution` on every entity.
+Attribution string: `"Data provided by NOAA"`, exposed via the
+`NoaaProvider.attribution` class attribute.
+
+### 11.2 Rijkswaterstaat (NL)
+
+- Base URL: `https://ddapi20-waterwebservices.rijkswaterstaat.nl`
+  (the ddapi20 subdomain — the older `waterwebservices.` host now
+  redirects to a migration page).
+- OpenAPI spec: `/webservices-api-docs`.
+- No API key. All calls are POST with a JSON body.
+- Catalogue (`POST /METADATASERVICES/OphalenCatalogus`, body
+  `{"CatalogusFilter":{"Grootheden":true,"Parameters":true,"Compartimenten":true,"Hoedanigheden":true,"Eenheden":true,"MeetApparaten":true}}`)
+  returns 2499 locations and 3426 aquo-metadata entries.
+- Predictions (`POST /ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen`)
+  returns three parallel time series for a WATHTE query — observed,
+  weather-forecast, and astronomic. The provider picks the entry whose
+  `Parameter_Wat_Omschrijving` contains `astronomisch`.
+- Reference plane: NAP for coastal stations, MSL for offshore. The
+  provider tries NAP first, falls back to MSL on empty result.
+- Time zone: request/response uses ISO 8601 with tz offsets; the
+  provider parses to UTC-aware.
+- Cross-reference source that helped: <https://github.com/physje/waterinfo>.
+
+Sample body (Scheveningen astronomic tide, next 24 h):
+
+```json
+POST /ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen
+{
+  "AquoPlusWaarnemingMetadata": {
+    "AquoMetadata": {
+      "Compartiment": {"Code": "OW"},
+      "Grootheid":    {"Code": "WATHTE"},
+      "Hoedanigheid": {"Code": "NAP"}
+    }
+  },
+  "Locatie": {"X": 4.263563, "Y": 52.099035, "Code": "scheveningen"},
+  "Periode": {
+    "Begindatumtijd": "2026-09-14T00:00:00.000+00:00",
+    "Einddatumtijd":  "2026-09-15T00:00:00.000+00:00"
+  }
+}
+```
+
+Attribution string: `"Data provided by Rijkswaterstaat"`, exposed via
+`RwsProvider.attribution`.
 
 ## 12. Common issues
 

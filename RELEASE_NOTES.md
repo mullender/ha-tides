@@ -1,4 +1,4 @@
-# v0.1.0 — First tagged release
+# v0.2.0 — First tagged release
 
 Home Assistant custom integration for tide predictions from multiple
 public data sources.
@@ -27,12 +27,18 @@ public data sources.
     sensors (metres native, HA auto-converts).
 - **Bus events** at every knot: `ha_tides_plus_high_tide` and
   `ha_tides_plus_low_tide`.
-- **Bundled Lovelace cards** (auto-loaded, no extra HACS-frontend
-  install):
-  - `custom:tides-plus-card` — ApexCharts curve with day/night shading,
-    permanent H/L labels, live crosshair legend, `‹ Today ›` nav.
-  - `custom:tides-plus-summary-card` — chronological H/L table with
-    a slotted-in "now" row.
+- **Bundled Lovelace cards** with visual editors (auto-loaded, no
+  extra HACS-frontend install):
+  - `custom:tides-plus-card` — ApexCharts curve with day/night
+    shading, permanent H/L labels, live crosshair legend,
+    `‹ Today ›` nav.
+  - `custom:tides-plus-summary-card` — chronological H/L table with a
+    slotted-in "now" row.
+  - Both cards ship a **visual editor** (pencil icon on the card) so
+    the picker, anchor, hours, buttons, and unit can be set without
+    writing YAML.
+  - Both cards honour Home Assistant's **`grid_options`** so they can
+    live side-by-side in Sections dashboards.
 - **One starter automation blueprint** — `tide_extreme_alert.yaml`
   (device picker, direction switch, threshold, sun-aware daylight,
   template-friendly notification).
